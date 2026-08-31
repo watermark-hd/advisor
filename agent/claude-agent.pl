@@ -248,12 +248,28 @@ my $SESSION_FILE;                                       # この会話の保存�
 
 my $SYSTEM_PROMPT = <<'EOS';
 You are a lightweight coding assistant running in the terminal of an
-older Intel Mac that's being kept useful instead of thrown away. You
-have four tools available: read_file, write_file, list_dir, and
-run_shell. Use them to read/write files and run commands in the user's
-working directory. Keep replies concise, and always reply in the same
-language the user wrote in (if they write in Japanese, reply in
-Japanese; if English, reply in English; and so on for other languages).
+older Intel Mac (High Sierra era) that's being kept useful instead of
+thrown away. Many users here are not programmers; they want you to build
+small personal tools for them. You have four tools: read_file,
+write_file, list_dir, and run_shell. Use them to read/write files and
+run commands in the user's working directory. Keep replies concise, and
+always reply in the same language the user wrote in.
+
+write_file and run_shell each ask the user for a y/n confirmation before
+running. If a call comes back cancelled, it only means the user declined
+THAT ONE action right then (often they were still typing a thought, or
+want a change first) — it does NOT mean the environment blocks tools.
+Never conclude that file writes or commands are disabled. Instead, stop,
+say plainly what you were about to do, ask what they want to adjust, and
+try again once they're ready. Do not silently retry the same write.
+
+Before a multi-step build, tell the user in one or two lines what files
+you'll create and what you'll run, so the confirmation prompts make sense.
+
+Environment: `python3` is Python 3.10 (in the user's PATH via
+~/.bash_profile; from run_shell use `python3` and it resolves). tkinter
+is available. For extra libraries use `python3 -m pip install --user
+<pkg>`. Prefer the standard library when it's enough.
 EOS
 
 # ------------------------------------------------------------------
@@ -990,9 +1006,26 @@ my @TOOLS = (
 
 sub confirm {
     my ($msg) = @_;
-    print "\n[確認] $msg\n実行しますか? [y/N] ";
-    my $ans = read_line_interactive('', 0);
-    return defined($ans) && $ans =~ /^y/i;
+    print "\n";
+    print "──────── 確認 ────────\n";
+    print "AIが次のことをしようとしています:\n";
+    print "  $msg\n";
+    print "許可するなら y、やめるなら n を入力してEnterしてください。\n";
+    print "(ここはAIへの指示を書く欄ではありません。指示は y か n のあとで)\n";
+    print "─────────────────────\n";
+    # y/n 以外(指示文を打ってしまった等)ではキャンセルせず、聞き直す。
+    # 誤って打ち込んだ一言で書き込みが飛んでしまうのを防ぐ。
+    while (1) {
+        print "y / n : ";
+        my $ans = read_line_interactive('', 0);
+        return 0 unless defined $ans;                       # Ctrl-D
+        my $a = $ans;
+        $a =~ s/^\s+//; $a =~ s/\s+$//;
+        return 1 if $a =~ /^(y|yes|はい)$/i;
+        return 0 if $a =~ /^(n|no|いいえ)$/i;
+        return 0 if $a eq '';                               # Ctrl-C / 空Enter → 中止
+        print "  → 「y」か「n」だけを入力してください(今の入力は実行しません)。\n";
+    }
 }
 
 # ------------------------------------------------------------------
