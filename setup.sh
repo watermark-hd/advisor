@@ -241,11 +241,17 @@ select_model() {
 
 PERL_ARGS=()
 while [ \$# -gt 0 ]; do
-  case "\$1" in
-    -h|--help) show_help; exit 0 ;;
-    --version) echo "advisor (high_sierra_claude) 0.1"; exit 0 ;;
-    --list-models) list_models; exit 0 ;;
-    --select-model)
+  raw="\$1"
+  # ダッシュの数(- でも -- でも無しでも)や大文字小文字を気にしなくて
+  # いいように正規化してから判定する。--version か -version か version か、で
+  # 迷って挫折しないように。
+  norm="\$(printf '%s' "\$raw" | sed 's/^-*//' | tr 'A-Z' 'a-z')"
+  case "\$norm" in
+    "") shift ;;
+    h|help|"?") show_help; exit 0 ;;
+    v|version) echo "advisor (high_sierra_claude) 0.1"; exit 0 ;;
+    list-models|listmodels|models) list_models; exit 0 ;;
+    select-model|selectmodel|select)
       # 設定だけして終了する(起動は次に 'advisor' と打てばよい)
       if [ -n "\$2" ] && [ "\$2" -eq "\$2" ] 2>/dev/null; then
         select_model "\$2"
@@ -254,12 +260,20 @@ while [ \$# -gt 0 ]; do
       fi
       exit 0
       ;;
-    --list-history) PERL_ARGS[\${#PERL_ARGS[@]}]="--list-history"; shift ;;
-    --resume) PERL_ARGS[\${#PERL_ARGS[@]}]="--resume"; shift ;;
-    --change-passphrase) PERL_ARGS[\${#PERL_ARGS[@]}]="--change-passphrase"; shift ;;
-    --set-recovery) PERL_ARGS[\${#PERL_ARGS[@]}]="--set-recovery"; shift ;;
-    --no-history) export CLAUDE_NO_HISTORY=1; shift ;;
-    -m|--model)
+    [0-9]|[0-9][0-9])
+      # 「advisor 3」= 3番のAIにして起動
+      select_model "\$norm"; shift ;;
+    list-history|listhistory|history|log)
+      PERL_ARGS[\${#PERL_ARGS[@]}]="--list-history"; shift ;;
+    resume|continue|cont)
+      PERL_ARGS[\${#PERL_ARGS[@]}]="--resume"; shift ;;
+    change-passphrase|changepassphrase|passphrase|password)
+      PERL_ARGS[\${#PERL_ARGS[@]}]="--change-passphrase"; shift ;;
+    set-recovery|setrecovery|recovery)
+      PERL_ARGS[\${#PERL_ARGS[@]}]="--set-recovery"; shift ;;
+    no-history|nohistory|nohist)
+      export CLAUDE_NO_HISTORY=1; shift ;;
+    m|model)
       export CLAUDE_MODEL="\$2"
       case "\$2" in
         gemini*) export CLAUDE_PROVIDER=gemini ;;
@@ -268,8 +282,11 @@ while [ \$# -gt 0 ]; do
       shift 2
       ;;
     *)
-      echo "不明なオプション: \$1" >&2
-      show_help
+      echo "そのオプションは分かりませんでした。ふつうは何も付けずに:" >&2
+      echo "  advisor            起動する(たいていこれだけでOK)" >&2
+      echo "  advisor version    バージョンを表示" >&2
+      echo "  advisor help       詳しい使い方" >&2
+      echo "(ダッシュ - は付けても付けなくてもかまいません)" >&2
       exit 1
       ;;
   esac
