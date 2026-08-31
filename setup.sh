@@ -1,5 +1,5 @@
 #!/bin/bash
-# setup.sh — high_sierra_claude のセットアップスクリプト
+# setup.sh — high_sierra_claude (advisor) のセットアップスクリプト
 #
 # 対象: Mavericks(10.9)〜High Sierra(10.13)以降のIntel Mac(Tier B)。
 # これらは標準のcurlが既にTLS1.2に対応しているため、追加のビルドなしで
@@ -8,12 +8,13 @@
 # が既にあれば、そちらを自動的に優先して使う。
 #
 # やること:
-#   1. Anthropic APIキーの案内と安全な入力・保存 (~/.claude-agent-env)
-#   2. claude-agent.pl と models.txt を ~/claude-build/ に配置
-#   3. ~/bin/claude ラッパーコマンドの設置 (--help/--model/--select-model等)
-#   4. bash補完の設置 (~/.bash_profile から source)
-#   5. ダブルクリック用 Claude.app の生成 (~/Applications、osacompile使用)
-#   6. 実際にAPIを叩いて疎通確認
+#   1. 使うAI(Gemini / Anthropic)の選択
+#   2. APIキーの案内と安全な入力・保存 (~/.claude-agent-env)
+#   3. claude-agent.pl と models.txt を ~/claude-build/ に配置
+#   4. ~/bin/advisor ラッパーコマンドの設置
+#   5. bash補完の設置 (~/.bash_profile から source)
+#   6. ダブルクリック用 Advisor.app の生成 (~/Applications、osacompile使用)
+#   7. 実際にAPIを叩いて疎通確認
 
 set -e
 
@@ -21,7 +22,19 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ENV_FILE="$HOME/.claude-agent-env"
 BUILD_DIR="$HOME/claude-build"
 BIN_DIR="$HOME/bin"
-COMPLETION_FILE="$HOME/.claude-completion.bash"
+COMPLETION_FILE="$HOME/.advisor-completion.bash"
+APP_PATH="$HOME/Applications/Advisor.app"
+LAUNCHER_SRC="$SCRIPT_DIR/launcher/advisor-launcher.applescript"
+
+# ~/.claude-agent-env の1行を差し替える(無ければ追記)
+upsert_env() {
+  local var="$1" val="$2"
+  touch "$ENV_FILE"
+  grep -v "^export ${var}=" "$ENV_FILE" > "$ENV_FILE.tmp" 2>/dev/null || true
+  mv "$ENV_FILE.tmp" "$ENV_FILE"
+  printf 'export %s=%s\n' "$var" "$val" >> "$ENV_FILE"
+  chmod 600 "$ENV_FILE"
+}
 
 # Tier A の自前ビルドtoolchainがあればそちらを使い、無ければ標準curlを使う
 if [ -x "$HOME/claude-toolchain/bin/curl" ]; then
@@ -35,23 +48,56 @@ else
 fi
 echo ""
 
-echo "=== high_sierra_claude セットアップ ==="
+echo "=== high_sierra_claude (advisor) セットアップ ==="
 echo ""
 
-if [ -f "$ENV_FILE" ]; then
-  echo "既存のAPIキー($ENV_FILE)をそのまま使います(バージョンアップ時は毎回これでOK)。"
-  echo "別のキーに変えたい場合は、このファイルを削除してからもう一度実行してください:"
-  echo "  rm $ENV_FILE"
+# 既存の設定を読み込んでおく(キーの使い回し判定に使う)
+[ -f "$ENV_FILE" ] && . "$ENV_FILE" 2>/dev/null || true
+
+# --- 1. 使うAIを選ぶ ---
+echo "どちらのAIを使いますか?"
+echo "  1) Gemini (Google)   — 無料枠あり・クレジットカード不要        [既定]"
+echo "  2) Anthropic (Claude) — 高性能・従量課金(要クレジットチャージ)"
+printf "番号を入力 [1]: "
+read -r PROVIDER_CHOICE
+PROVIDER_CHOICE="${PROVIDER_CHOICE:-1}"
+
+if [ "$PROVIDER_CHOICE" = "2" ]; then
+  PROVIDER="anthropic"
+  KEY_VAR="ANTHROPIC_API_KEY"
+else
+  PROVIDER="gemini"
+  KEY_VAR="GEMINI_API_KEY"
+fi
+echo "→ $PROVIDER を使います。"
+echo ""
+
+# --- 2. APIキー ---
+# 既にそのプロバイダのキーが保存済みなら、それを使う
+EXISTING_KEY="$(eval "printf '%s' \"\${$KEY_VAR}\"")"
+if [ -n "$EXISTING_KEY" ]; then
+  echo "保存済みの $KEY_VAR をそのまま使います。"
+  echo "別のキーに変えたい場合は 'rm $ENV_FILE' してから再実行してください。"
+  API_KEY="$EXISTING_KEY"
   echo ""
 else
-  echo "Anthropic APIキーが必要です。まだお持ちでない場合:"
-  echo "  1. https://console.anthropic.com/ を開く (claude.aiとは別サイトです)"
-  echo "  2. アカウントを作成 / ログイン"
-  echo "  3. 左メニューの 'API Keys' から新しいキーを発行"
-  echo "  4. 'Billing' で少額のクレジットをチャージ(従量課金)"
-  echo ""
-  echo "注意: claude.aiにログインする時のパスワードとは別物です。"
-  echo "'sk-ant-api03-' で始まる長い文字列がAPIキーです。"
+  if [ "$PROVIDER" = "gemini" ]; then
+    echo "Gemini APIキーが必要です。まだお持ちでない場合:"
+    echo "  1. https://aistudio.google.com/apikey を開く"
+    echo "  2. Googleアカウントでログイン"
+    echo "  3. 'Create API key' でキーを発行(無料枠を使う分にはカード登録不要)"
+    echo ""
+    echo "'AIza' で始まる文字列がAPIキーです。"
+  else
+    echo "Anthropic APIキーが必要です。まだお持ちでない場合:"
+    echo "  1. https://console.anthropic.com/ を開く (claude.aiとは別サイトです)"
+    echo "  2. アカウントを作成 / ログイン"
+    echo "  3. 左メニューの 'API Keys' から新しいキーを発行"
+    echo "  4. 'Billing' で少額のクレジットをチャージ(従量課金)"
+    echo ""
+    echo "注意: claude.aiにログインする時のパスワードとは別物です。"
+    echo "'sk-ant-api03-' で始まる長い文字列がAPIキーです。"
+  fi
   echo ""
 
   printf "APIキーを貼り付けてEnter(画面には表示されません): "
@@ -76,41 +122,41 @@ else
       ;;
   esac
 
-  case "$API_KEY" in
-    sk-ant-api*) ;;
-    *)
-      echo "警告: 'sk-ant-api' で始まっていません。"
-      echo "claude.aiのパスワードなど別のものを貼り付けていませんか?"
-      echo "このまま処理を続けますが、動作確認で失敗する可能性があります。"
-      ;;
-  esac
+  if [ "$PROVIDER" = "gemini" ]; then
+    case "$API_KEY" in
+      AIza*) ;;
+      *) echo "警告: 'AIza' で始まっていません。貼り付けミスがないか確認してください(このまま続けます)。" ;;
+    esac
+  else
+    case "$API_KEY" in
+      sk-ant-api*) ;;
+      *) echo "警告: 'sk-ant-api' で始まっていません。claude.aiのパスワードなどを貼り付けていませんか?(このまま続けます)" ;;
+    esac
+  fi
 
   key_len=$(echo -n "$API_KEY" | wc -c | tr -d ' ')
-  if [ "$key_len" -lt 50 ]; then
+  if [ "$key_len" -lt 30 ]; then
     echo "警告: キーが ${key_len} 文字しかありません。コピーが途中で切れていませんか?"
   fi
 
-  printf 'export ANTHROPIC_API_KEY=%s\n' "$API_KEY" > "$ENV_FILE"
-  chmod 600 "$ENV_FILE"
+  upsert_env "$KEY_VAR" "$API_KEY"
   echo "$ENV_FILE に保存しました(あなたのアカウントだけが読めるファイルです)"
   echo ""
 fi
 
-# shellcheck disable=SC1090
-source "$ENV_FILE"
-API_KEY="$ANTHROPIC_API_KEY"
+upsert_env "CLAUDE_PROVIDER" "$PROVIDER"
 
-# --- エージェント本体を配置 ---
+# --- 3. エージェント本体を配置 ---
 mkdir -p "$BUILD_DIR"
 cp "$SCRIPT_DIR/agent/claude-agent.pl" "$BUILD_DIR/claude-agent.pl"
 cp "$SCRIPT_DIR/models.txt" "$BUILD_DIR/models.txt"
 echo "$BUILD_DIR に claude-agent.pl / models.txt を配置しました。"
 
-# --- claude コマンド(ラッパー)の設置 ---
+# --- 4. advisor コマンド(ラッパー)の設置 ---
 mkdir -p "$BIN_DIR"
-cat > "$BIN_DIR/claude" << WRAPEOF
+cat > "$BIN_DIR/advisor" << WRAPEOF
 #!/bin/bash
-# claude — high_sierra_claude ラッパーコマンド (setup.sh が自動生成)
+# advisor — high_sierra_claude ラッパーコマンド (setup.sh が自動生成)
 set -e
 
 ENV_FILE="$ENV_FILE"
@@ -123,21 +169,22 @@ source "\$ENV_FILE"
 
 show_help() {
   cat <<EOF
-使い方: claude [オプション]
+使い方: advisor [オプション]
 
   -h, --help              このヘルプを表示
       --version           バージョンを表示
   -m, --model <ID>        このセッションだけモデルを指定して起動
       --select-model      モデルを選ぶメニューを表示し、既定として保存
       --list-models       選択可能なモデルの一覧を表示
-      --list-history        保存済みの会話を一覧表示 (パスフレーズが必要)
-      --resume              保存済みの会話を選んで続きから再開
-      --no-history          今回は会話を保存しない (パスフレーズも尋ねない)
-      --change-passphrase   履歴パスフレーズを変更
-      --set-recovery        合言葉 (パスフレーズを忘れたとき用の秘密の質問) を設定
+      --list-history      保存済みの会話を一覧表示 (パスフレーズが必要)
+      --resume            保存済みの会話を選んで続きから再開
+      --no-history        今回は会話を保存しない (パスフレーズも尋ねない)
+      --change-passphrase 履歴パスフレーズを変更
+      --set-recovery      合言葉 (パスフレーズを忘れたとき用の秘密の質問) を設定
 
-引数なしで実行すると、保存済みの設定でエージェントを起動します。
-会話は既定で ~/.claude-agent/history に暗号化して保存されます
+引数なしで実行すると、保存済みの設定で起動します。
+使うAI(anthropic/gemini)は setup.sh で選択。会話中に /claude・/gemini で
+切り替えられます。会話は既定で ~/.claude-agent/history に暗号化保存されます
 (初回起動時にパスフレーズを設定。合言葉も任意で設定できます)。
 EOF
 }
@@ -175,7 +222,7 @@ PERL_ARGS=()
 while [ \$# -gt 0 ]; do
   case "\$1" in
     -h|--help) show_help; exit 0 ;;
-    --version) echo "claude (high_sierra_claude) 0.1"; exit 0 ;;
+    --version) echo "advisor (high_sierra_claude) 0.1"; exit 0 ;;
     --list-models) list_models; exit 0 ;;
     --select-model) select_model; shift ;;
     --list-history) PERL_ARGS[\${#PERL_ARGS[@]}]="--list-history"; shift ;;
@@ -203,72 +250,95 @@ else
   exec perl "\$AGENT_SCRIPT"
 fi
 WRAPEOF
-chmod +x "$BIN_DIR/claude"
-echo "$BIN_DIR/claude を作成しました。"
+chmod +x "$BIN_DIR/advisor"
+echo "$BIN_DIR/advisor を作成しました。"
+# 旧名(claude)が残っていれば片付ける
+[ -e "$BIN_DIR/claude" ] && rm -f "$BIN_DIR/claude" && echo "旧 $BIN_DIR/claude を削除しました。"
 
 if ! grep -qF 'export PATH=$HOME/bin:$PATH' "$HOME/.bash_profile" 2>/dev/null; then
   echo "export PATH=\$HOME/bin:\$PATH" >> "$HOME/.bash_profile"
   echo "PATHに $BIN_DIR を追加しました。"
 fi
 
-# --- bash補完の設置 ---
-cp "$SCRIPT_DIR/completion/claude-completion.bash" "$COMPLETION_FILE"
+# --- 5. bash補完の設置 ---
+cp "$SCRIPT_DIR/completion/advisor-completion.bash" "$COMPLETION_FILE"
 if ! grep -qF "source $COMPLETION_FILE" "$HOME/.bash_profile" 2>/dev/null; then
   echo "source $COMPLETION_FILE" >> "$HOME/.bash_profile"
   echo "bash補完を設置しました($COMPLETION_FILE)。"
 fi
+# 旧補完(claude)の後始末
+if [ -f "$HOME/.claude-completion.bash" ]; then
+  grep -v "source $HOME/.claude-completion.bash" "$HOME/.bash_profile" > "$HOME/.bash_profile.tmp" 2>/dev/null && mv "$HOME/.bash_profile.tmp" "$HOME/.bash_profile" || true
+  rm -f "$HOME/.claude-completion.bash"
+fi
 echo "(次回ログインから有効。今すぐ使うには 'source ~/.bash_profile' を実行するか、新しいターミナルを開いてください)"
 echo ""
 
-# --- ダブルクリック用 Claude.app の生成 ---
+# --- 6. ダブルクリック用 Advisor.app の生成 ---
 # ターミナルに不慣れな人でもアイコンから始められるようにするためのランチャー。
 # osacompile はどの macOS にも標準で入っているので追加ビルドは不要。
-APP_PATH="$HOME/Applications/Claude.app"
-LAUNCHER_SRC="$SCRIPT_DIR/launcher/claude-launcher.applescript"
 if command -v osacompile >/dev/null 2>&1 && [ -f "$LAUNCHER_SRC" ]; then
   mkdir -p "$HOME/Applications"
-  rm -rf "$APP_PATH"
+  rm -rf "$APP_PATH" "$HOME/Applications/Claude.app"
   if osacompile -o "$APP_PATH" "$LAUNCHER_SRC" 2>/dev/null; then
     echo "$APP_PATH を作成しました。"
-    echo "  Finderで ~/Applications を開き、Claude をダブルクリックすると起動します。"
+    echo "  Finderで ~/Applications を開き、Advisor をダブルクリックすると起動します。"
     echo "  Dockやデスクトップにドラッグしておくと次回から一発です。"
   else
-    echo "Claude.app の生成に失敗しました(スキップ)。ターミナルから 'claude' で問題なく使えます。"
+    echo "Advisor.app の生成に失敗しました(スキップ)。ターミナルから 'advisor' で問題なく使えます。"
   fi
 else
-  echo "osacompile が見つからないため Claude.app の生成はスキップします。"
-  echo "ターミナルから 'claude' と打てば起動します。"
+  echo "osacompile が見つからないため Advisor.app の生成はスキップします。"
+  echo "ターミナルから 'advisor' と打てば起動します。"
 fi
 echo ""
 
-# --- 疎通確認 ---
+# --- 7. 疎通確認 ---
 echo "APIへの疎通を確認しています..."
-RESPONSE_FILE="/tmp/claude-setup-check-$$.json"
+RESPONSE_FILE="/tmp/advisor-setup-check-$$.json"
 if [ -n "$CACERT" ]; then
   CACERT_OPT=(--cacert "$CACERT")
 else
   CACERT_OPT=()
 fi
-HTTP_CODE=$("$CURL_BIN" -s "${CACERT_OPT[@]}" \
-  https://api.anthropic.com/v1/messages \
-  -H "x-api-key: $API_KEY" \
-  -H "anthropic-version: 2023-06-01" \
-  -H "content-type: application/json" \
-  -d '{"model":"claude-sonnet-5","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}' \
-  -o "$RESPONSE_FILE" \
-  -w "%{http_code}")
+
+if [ "$PROVIDER" = "gemini" ]; then
+  GEMINI_MODEL="${CLAUDE_MODEL:-gemini-3.5-flash-lite}"
+  case "$GEMINI_MODEL" in gemini*) ;; *) GEMINI_MODEL="gemini-3.5-flash-lite" ;; esac
+  HTTP_CODE=$("$CURL_BIN" -s "${CACERT_OPT[@]}" \
+    "https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent" \
+    -H "x-goog-api-key: $API_KEY" \
+    -H "content-type: application/json" \
+    -d '{"contents":[{"parts":[{"text":"hi"}]}],"generationConfig":{"maxOutputTokens":8}}' \
+    -o "$RESPONSE_FILE" \
+    -w "%{http_code}")
+else
+  HTTP_CODE=$("$CURL_BIN" -s "${CACERT_OPT[@]}" \
+    https://api.anthropic.com/v1/messages \
+    -H "x-api-key: $API_KEY" \
+    -H "anthropic-version: 2023-06-01" \
+    -H "content-type: application/json" \
+    -d '{"model":"claude-sonnet-5","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}' \
+    -o "$RESPONSE_FILE" \
+    -w "%{http_code}")
+fi
 
 echo ""
 if [ "$HTTP_CODE" = "200" ]; then
   echo "疎通確認OK。準備完了です。"
   echo ""
-  echo "使い方: ターミナルで 'claude' と打つだけです。"
-  echo "  claude --help            オプション一覧"
-  echo "  claude --select-model    使うモデルを選ぶ"
-  echo "  claude -m <ID>           このセッションだけモデルを指定"
+  echo "使い方: ターミナルで 'advisor' と打つだけです。"
+  echo "  advisor --help            オプション一覧"
+  echo "  advisor --select-model    使うモデルを選ぶ"
+  echo "  advisor -m <ID>           このセッションだけモデルを指定"
+  echo "  (会話中に /claude・/gemini でAIを切り替え)"
 else
-  echo "APIエラー(HTTP $HTTP_CODE)。キーが正しいか、Consoleでクレジットが"
-  echo "チャージされているか確認してください。"
+  echo "APIエラー(HTTP $HTTP_CODE)。キーが正しいか、"
+  if [ "$PROVIDER" = "gemini" ]; then
+    echo "AI Studio でキーが有効か確認してください。"
+  else
+    echo "Console でクレジットがチャージされているか確認してください。"
+  fi
   echo "--- サーバーからの応答 ---"
   cat "$RESPONSE_FILE"
   echo ""

@@ -1,10 +1,10 @@
-# claude-completion.bash — high_sierra_claude の `claude` コマンド用bash補完
+# advisor-completion.bash — high_sierra_claude の `advisor` コマンド用bash補完
 #
 # High Sierra標準のbash 3.2でも動くよう、連想配列などbash4以降の機能は
 # 使わずに書いてある。~/.bash_profile から source して使う
 # (setup.sh が自動で設定する)。
 
-_claude_completions() {
+_advisor_completions() {
     local cur prev opts models_file
     COMPREPLY=()
     cur="${COMP_WORDS[COMP_CWORD]}"
@@ -26,4 +26,4 @@ _claude_completions() {
     COMPREPLY=( $(compgen -W "$opts" -- "$cur") )
     return 0
 }
-complete -F _claude_completions claude
+complete -F _advisor_completions advisor

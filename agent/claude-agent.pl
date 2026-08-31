@@ -1,6 +1,7 @@
 #!/usr/bin/perl
-# claude-agent.pl — 古いIntel Mac (Snow Leopard 〜 High Sierra 世代) 向けの
-# 自己完結型 Claude APIエージェント。外部CPANモジュールに依存しない。
+# claude-agent.pl (advisor) — 古いIntel Mac (Snow Leopard 〜 High Sierra 世代)
+# 向けの自己完結型 AIエージェント。外部CPANモジュールに依存しない。
+# Anthropic (Claude) と Google (Gemini) の両APIに対応。
 #
 # Mavericks(10.9)以降(Tier B)は標準のcurlが既にTLS1.2対応のため、追加の
 # ビルドなしでそのまま動く。Snow Leopard〜Mountain Lion(Tier A, 10.6-10.8)
@@ -8,7 +9,8 @@
 # CLAUDE_CURL / CLAUDE_CACERT でその場所を指定する。
 #
 # 使い方:
-#   export ANTHROPIC_API_KEY=sk-ant-...
+#   export ANTHROPIC_API_KEY=sk-ant-...      # または GEMINI_API_KEY=...
+#   export CLAUDE_PROVIDER=anthropic          # または gemini
 #   perl claude-agent.pl
 
 use strict;
@@ -48,7 +50,7 @@ for my $arg (@ARGV) {
         exit 0;
     }
     if ($arg eq '--version') {
-        print "claude-agent.pl (high_sierra_claude) 0.1\n";
+        print "advisor (high_sierra_claude) 0.1\n";
         exit 0;
     }
     if ($arg eq '--list-history')      { $LIST_HISTORY = 1; }
@@ -59,7 +61,7 @@ for my $arg (@ARGV) {
 
 sub print_help {
     print <<'EOH';
-使い方: claude-agent.pl [オプション]
+使い方: advisor [オプション]
 
   -h, --help            このヘルプを表示
       --version         バージョンを表示
@@ -69,28 +71,65 @@ sub print_help {
       --set-recovery    合言葉(復旧用の秘密の質問)を設定して終了
 
 環境変数:
-  ANTHROPIC_API_KEY  (必須) Anthropic APIキー
-  CLAUDE_MODEL        使用するモデル (既定: claude-sonnet-5)
-  CLAUDE_CURL         curlコマンドのパス (既定: curl。PATH上のものを使用)
-  CLAUDE_CACERT       CA証明書ファイル (既定: 未指定。システムcurlの信頼ストアを使用)
+  CLAUDE_PROVIDER    使うAI: anthropic (既定) または gemini
+  ANTHROPIC_API_KEY  Anthropic APIキー (CLAUDE_PROVIDER=anthropic のとき必須)
+  GEMINI_API_KEY     Gemini APIキー   (CLAUDE_PROVIDER=gemini のとき必須)
+  CLAUDE_MODEL       使用するモデル (既定: claude-sonnet-5 / gemini-3.5-flash-lite)
+  CLAUDE_GEMINI_THINKING  high にすると Gemini の思考を深くする (既定 low=速い)
+  CLAUDE_CURL        curlコマンドのパス (既定: curl。PATH上のものを使用)
+  CLAUDE_CACERT      CA証明書ファイル (既定: 未指定。システムcurlの信頼ストアを使用)
   CLAUDE_NO_HISTORY  1にすると会話を保存しない(パスフレーズも尋ねない)
   CLAUDE_OPENSSL     opensslコマンドのパス (既定: openssl)
 
-モデルの切り替えや対話メニューは `claude --select-model` / `claude -m <ID>`
-(シェルラッパー側)から行える。
+会話中に /claude・/gemini でAIを切り替えられる(会話は引き継がれる)。
+モデルの選択は `advisor --select-model` / `advisor -m <ID>` (シェルラッパー側)。
 EOH
 }
 
 # ------------------------------------------------------------------
 # 設定
 # ------------------------------------------------------------------
-my $CURL      = $ENV{CLAUDE_CURL} || 'curl';
-my $CACERT    = $ENV{CLAUDE_CACERT} || '';
-my $API_KEY   = $ENV{ANTHROPIC_API_KEY} or die "ANTHROPIC_API_KEY を設定してください\n";
-my $MODEL     = $ENV{CLAUDE_MODEL} || 'claude-sonnet-5';
+my $CURL       = $ENV{CLAUDE_CURL} || 'curl';
+my $CACERT     = $ENV{CLAUDE_CACERT} || '';
 my $MAX_TOKENS = 4096;
-my $API_URL   = 'https://api.anthropic.com/v1/messages';
-my $ANTHROPIC_VERSION = '2023-06-01';
+# setup.sh を介さず、会話中の /claude・/gemini で入力したキーを保存する先。
+my $ENV_FILE_PATH = ($ENV{HOME} || '.') . '/.claude-agent-env';
+
+# プロバイダ切り替え。CLAUDE_PROVIDER=gemini でクレジットカード登録不要の
+# Gemini API 無料枠を、既定(anthropic)では従量課金の Claude を使う。
+# 会話中に /claude・/gemini でも切り替えられる(下の会話ループ参照)。
+my ($PROVIDER, $API_KEY, $MODEL, $API_URL, $ANTHROPIC_VERSION);
+
+# $provider に応じて $API_KEY / $MODEL / $API_URL 等を(再)設定する。
+# 起動時と、会話中の /claude・/gemini の両方から呼ばれる。対応する
+# 環境変数(ANTHROPIC_API_KEY / GEMINI_API_KEY)が無ければ die する
+# — 起動時はそれで終了、切り替え時は呼び出し側で eval して握り、
+# 今のプロバイダのまま継続する。
+sub configure_provider {
+    my ($provider) = @_;
+    # CLAUDE_MODEL はプロバイダをまたぐと食い違うので、その provider の
+    # 名前で始まるときだけ採用し、そうでなければ既定モデルにする。
+    my $env_model = $ENV{CLAUDE_MODEL} || '';
+    if ($provider eq 'gemini') {
+        $ENV{GEMINI_API_KEY} or die "GEMINI_API_KEY を設定してください\n";
+        $API_KEY = $ENV{GEMINI_API_KEY};
+        $MODEL   = ($env_model =~ /^gemini/) ? $env_model : 'gemini-3.5-flash-lite';
+        $API_URL = "https://generativelanguage.googleapis.com/v1beta/models/$MODEL:generateContent";
+    }
+    elsif ($provider eq 'anthropic') {
+        $ENV{ANTHROPIC_API_KEY} or die "ANTHROPIC_API_KEY を設定してください\n";
+        $API_KEY = $ENV{ANTHROPIC_API_KEY};
+        $MODEL   = ($env_model =~ /^claude/) ? $env_model : 'claude-sonnet-5';
+        $API_URL = 'https://api.anthropic.com/v1/messages';
+        $ANTHROPIC_VERSION = '2023-06-01';
+    }
+    else {
+        die "不明なプロバイダ: '$provider' (anthropic か gemini)\n";
+    }
+    $PROVIDER = $provider;
+}
+
+configure_provider($ENV{CLAUDE_PROVIDER} || 'anthropic');
 
 # --- 会話履歴(暗号化してローカル保存) ---
 # ランダムなマスター鍵で履歴ファイルを暗号化し、そのマスター鍵自体を
@@ -258,8 +297,21 @@ package main;
 # ------------------------------------------------------------------
 # curl 呼び出し
 # ------------------------------------------------------------------
+# プロバイダごとのHTTPヘッダ。APIキーはここで組み立て、call_api には
+# ヘッダ文字列の配列として渡す(call_api自体はどっちのAIか知らない)。
+sub build_headers {
+    if ($PROVIDER eq 'gemini') {
+        return [ "x-goog-api-key: $API_KEY", "content-type: application/json" ];
+    }
+    return [
+        "x-api-key: $API_KEY",
+        "anthropic-version: $ANTHROPIC_VERSION",
+        "content-type: application/json",
+    ];
+}
+
 sub call_api {
-    my ($body_json) = @_;
+    my ($url, $headers, $body_json) = @_;
 
     my $tmp_req    = "/tmp/claude-agent-req-$$.json";
     my $tmp_resp   = "/tmp/claude-agent-resp-$$.json";
@@ -273,12 +325,12 @@ sub call_api {
     # curlの設定ファイル(-K)経由でヘッダを渡す
     open(my $cf, '>', $tmp_config) or die "cannot write $tmp_config: $!\n";
     chmod 0600, $tmp_config;
-    print $cf qq(url = "$API_URL"\n);
+    print $cf qq(url = "$url"\n);
     print $cf qq(request = "POST"\n);
     print $cf qq(cacert = "$CACERT"\n) if $CACERT;
-    print $cf qq(header = "x-api-key: $API_KEY"\n);
-    print $cf qq(header = "anthropic-version: $ANTHROPIC_VERSION"\n);
-    print $cf qq(header = "content-type: application/json"\n);
+    for my $h (@$headers) {
+        print $cf qq(header = "$h"\n);
+    }
     print $cf qq(data-binary = "\@$tmp_req"\n);
     print $cf qq(output = "$tmp_resp"\n);
     print $cf qq(write-out = "%{http_code}"\n);
@@ -286,7 +338,11 @@ sub call_api {
     print $cf qq(show-error\n);
     close $cf;
 
+    # 応答待ちのあいだ画面が固まって見えないよう、一言出しておいて
+    # 返ってきたら消す(古い機械だと初回接続で数秒〜十数秒かかる)。
+    print "  問い合わせ中...";
     my $http_code = `@{[quote($CURL)]} -K @{[quote($tmp_config)]}`;
+    print "\r\x1b[K";
     unlink $tmp_req, $tmp_config;
 
     open(my $rf, '<:encoding(UTF-8)', $tmp_resp) or die "cannot read response: $!\n";
@@ -306,6 +362,143 @@ sub quote {
     my ($s) = @_;
     $s =~ s/'/'\\''/g;
     return "'$s'";
+}
+
+# ------------------------------------------------------------------
+# プロバイダごとのリクエスト構築・レスポンス解析
+#
+# 会話履歴(@messages)は常に Anthropic の content blocks 形式
+# (role => user/assistant, content => 文字列 or [{type=>text/tool_use/
+# tool_result, ...}]) を内部形式として持つ。Gemini 利用時は API を呼ぶ
+# 直前だけ contents/parts 形式に変換し、応答が来たらすぐ内部形式へ戻す。
+# こうすることで会話ループや run_tool はプロバイダを一切気にしなくてよい。
+# ------------------------------------------------------------------
+sub build_request {
+    my ($messages, $tools, $system) = @_;
+    return $PROVIDER eq 'gemini'
+        ? build_request_gemini($messages, $tools, $system)
+        : build_request_anthropic($messages, $tools, $system);
+}
+
+sub build_request_anthropic {
+    my ($messages, $tools, $system) = @_;
+    return {
+        model      => $MODEL,
+        max_tokens => $MAX_TOKENS,
+        system     => $system,
+        messages   => $messages,
+        tools      => $tools,
+    };
+}
+
+sub build_request_gemini {
+    my ($messages, $tools, $system) = @_;
+
+    my @contents;
+    for my $msg (@$messages) {
+        my $role = $msg->{role} eq 'assistant' ? 'model' : 'user';
+        my @parts;
+        if (!ref $msg->{content}) {
+            push @parts, { text => $msg->{content} };
+        }
+        else {
+            for my $block (@{ $msg->{content} }) {
+                if ($block->{type} eq 'text') {
+                    my $part = { text => $block->{text} };
+                    $part->{thoughtSignature} = $block->{thought_signature} if defined $block->{thought_signature};
+                    push @parts, $part;
+                }
+                elsif ($block->{type} eq 'tool_use') {
+                    my $part = { functionCall => { name => $block->{name}, args => $block->{input} } };
+                    # Gemini 3系は functionCall を送り返す時、受け取った時と同じ
+                    # thoughtSignature を付け直さないと400になる。
+                    $part->{thoughtSignature} = $block->{thought_signature} if defined $block->{thought_signature};
+                    push @parts, $part;
+                }
+                elsif ($block->{type} eq 'tool_result') {
+                    # Gemini は tool_use_id ではなく名前で結果を紐付ける
+                    push @parts, {
+                        functionResponse => {
+                            name     => $block->{name},
+                            response => { output => $block->{content} },
+                        },
+                    };
+                }
+            }
+        }
+        push @contents, { role => $role, parts => \@parts };
+    }
+
+    my @function_declarations = map {
+        +{ name => $_->{name}, description => $_->{description}, parameters => $_->{input_schema} }
+    } @$tools;
+
+    return {
+        contents          => \@contents,
+        systemInstruction => { parts => [ { text => $system } ] },
+        tools             => [ { functionDeclarations => \@function_declarations } ],
+        generationConfig  => {
+            maxOutputTokens => $MAX_TOKENS,
+            thinkingConfig  => _gemini_thinking_config(),
+        },
+    };
+}
+
+# Gemini 3系は thinkingLevel 省略時の既定が "HIGH" で、単純な質問でも最初の
+# 1文字まで数十秒かかることがある。非力なマシンでの対話用途では速さ優先で
+# LOW を既定にし、CLAUDE_GEMINI_THINKING=high で元に戻せるようにする。
+# Gemini 2.5系は thinkingBudget(0〜24576、-1で動的)なのでモデル名で分岐。
+sub _gemini_thinking_config {
+    my $want_high = lc($ENV{CLAUDE_GEMINI_THINKING} || 'low') eq 'high';
+    if ($MODEL =~ /^gemini-3/) {
+        return { thinkingLevel => $want_high ? 'HIGH' : 'LOW' };
+    }
+    return { thinkingBudget => $want_high ? -1 : 0 };
+}
+
+sub parse_response {
+    my ($resp) = @_;
+    return $PROVIDER eq 'gemini'
+        ? parse_response_gemini($resp)
+        : parse_response_anthropic($resp);
+}
+
+sub parse_response_anthropic {
+    my ($resp) = @_;
+    if ($resp->{type} && $resp->{type} eq 'error') {
+        die "APIエラー: " . MiniJSON::encode($resp) . "\n";
+    }
+    return @{ $resp->{content} || [] };
+}
+
+my $gemini_call_seq = 0;
+
+sub parse_response_gemini {
+    my ($resp) = @_;
+    if ($resp->{error}) {
+        die "APIエラー: " . MiniJSON::encode($resp->{error}) . "\n";
+    }
+    my $candidate = $resp->{candidates} && $resp->{candidates}[0];
+    my @blocks;
+    for my $part (@{ ($candidate && $candidate->{content}{parts}) || [] }) {
+        if (defined $part->{text}) {
+            my $block = { type => 'text', text => $part->{text} };
+            $block->{thought_signature} = $part->{thoughtSignature} if defined $part->{thoughtSignature};
+            push @blocks, $block;
+        }
+        elsif ($part->{functionCall}) {
+            $gemini_call_seq++;
+            my $block = {
+                type  => 'tool_use',
+                id    => "gemini-call-$gemini_call_seq",   # Gemini の functionCall には id が無いので代用
+                name  => $part->{functionCall}{name},
+                input => $part->{functionCall}{args} || {},
+            };
+            $block->{thought_signature} = $part->{thoughtSignature} if defined $part->{thoughtSignature};
+            push @blocks, $block;
+        }
+    }
+    return @blocks;
 }
 
 # ------------------------------------------------------------------
@@ -1077,10 +1270,10 @@ if ($HISTORY_ENABLED && !$SESSION_FILE) {
     $SESSION_FILE = "$HISTORY_DIR/$STARTED.json.enc";
 }
 
-print "=== Claude Agent (high_sierra_claude) ===\n";
-print "モデル: $MODEL\n";
+print "=== high_sierra Advisor ===\n";
+print "[$PROVIDER / $MODEL]\n";
 print $HISTORY_ENABLED ? "履歴: 暗号化して保存します\n" : "履歴: 保存しません\n";
-print "こんにちは。(終了は 'exit' または Ctrl-D)\n";
+print "こんにちは。(終了は 'exit' または Ctrl-D。AI切り替えは /claude か /gemini)\n";
 
 while (1) {
     my $input = read_line_interactive("\nご用件をどうぞ> ");
@@ -1090,38 +1283,73 @@ while (1) {
     next if $input eq '';
     last if $input eq 'exit';
 
+    if ($input eq '/claude' || $input eq '/gemini') {
+        my $target = $input eq '/claude' ? 'anthropic' : 'gemini';
+        if ($target eq $PROVIDER) {
+            print "\nすでに [$PROVIDER / $MODEL] です。\n";
+        }
+        else {
+            eval { configure_provider($target) };
+            if ($@) {
+                # キーが無くて切り替えられない。その場で入力してもらう。
+                # 空Enterでキャンセルすれば元のプロバイダのまま続けられる。
+                my $key_name = $target eq 'gemini' ? 'GEMINI_API_KEY' : 'ANTHROPIC_API_KEY';
+                my $key = read_secret("\n$key_name が未設定です。貼り付けてEnter(空Enterでキャンセル): ");
+                if (!defined $key || $key eq '') {
+                    print "キャンセルしました。[$PROVIDER / $MODEL] のままです。\n";
+                }
+                else {
+                    $ENV{$key_name} = $key;
+                    eval { configure_provider($target) };
+                    if ($@) {
+                        print "それでも切り替えられませんでした: $@";
+                    }
+                    else {
+                        print "[$PROVIDER / $MODEL] に切り替えました。会話はそのまま引き継がれます。\n";
+                        print "このキーを $ENV_FILE_PATH に保存しますか? [y/N] ";
+                        my $yn = <STDIN>;
+                        if (defined $yn && $yn =~ /^y/i && open(my $ef, '>>', $ENV_FILE_PATH)) {
+                            print $ef "export $key_name=$key\n";
+                            close $ef;
+                            chmod 0600, $ENV_FILE_PATH;
+                            print "保存しました。\n";
+                        }
+                    }
+                }
+            }
+            else {
+                print "\n[$PROVIDER / $MODEL] に切り替えました。会話はそのまま引き継がれます。\n";
+            }
+        }
+        next;
+    }
+
     push @messages, { role => 'user', content => $input };
 
     while (1) {
-        my $body = {
-            model => $MODEL,
-            max_tokens => $MAX_TOKENS,
-            system => $SYSTEM_PROMPT,
-            messages => \@messages,
-            tools => \@TOOLS,
-        };
-        my $resp = call_api(MiniJSON::encode($body));
+        my $body = build_request(\@messages, \@TOOLS, $SYSTEM_PROMPT);
+        my $resp = call_api($API_URL, build_headers(), MiniJSON::encode($body));
 
-        if ($resp->{type} && $resp->{type} eq 'error') {
-            print "APIエラー: " . MiniJSON::encode($resp) . "\n";
+        my @content_blocks = eval { parse_response($resp) };
+        if ($@) {
+            print $@;
             last;
         }
-
-        my @content_blocks = @{ $resp->{content} || [] };
         push @messages, { role => 'assistant', content => \@content_blocks };
 
         my @tool_results;
         for my $block (@content_blocks) {
             if ($block->{type} eq 'text') {
-                print "\nclaude> $block->{text}\n";
+                print "\n$PROVIDER> $block->{text}\n";
             }
             elsif ($block->{type} eq 'tool_use') {
                 print "\n[tool_use] $block->{name}(" . MiniJSON::encode($block->{input}) . ")\n";
                 my $result = run_tool($block->{name}, $block->{input});
                 push @tool_results, {
-                    type => 'tool_result',
+                    type        => 'tool_result',
                     tool_use_id => $block->{id},
-                    content => $result,
+                    name        => $block->{name},   # Gemini は名前で結果を紐付ける
+                    content     => $result,
                 };
             }
         }
