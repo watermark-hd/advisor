@@ -334,6 +334,10 @@ sub call_api {
     print $cf qq(data-binary = "\@$tmp_req"\n);
     print $cf qq(output = "$tmp_resp"\n);
     print $cf qq(write-out = "%{http_code}"\n);
+    # 回線がつまっても永遠に待たないよう上限を設ける。超えたら curl が
+    # エラー終了し、下で HTTP 000 として扱われる(固まらない)。
+    print $cf qq(connect-timeout = 20\n);
+    print $cf qq(max-time = 180\n);
     print $cf qq(silent\n);
     print $cf qq(show-error\n);
     close $cf;
@@ -345,14 +349,20 @@ sub call_api {
     print "\r\x1b[K";
     unlink $tmp_req, $tmp_config;
 
-    open(my $rf, '<:encoding(UTF-8)', $tmp_resp) or die "cannot read response: $!\n";
-    local $/;
-    my $resp_body = <$rf>;
-    close $rf;
+    my $resp_body = '';
+    if (open(my $rf, '<:encoding(UTF-8)', $tmp_resp)) {
+        local $/;
+        $resp_body = <$rf>;
+        close $rf;
+        $resp_body = '' unless defined $resp_body;
+    }
     unlink $tmp_resp;
 
     if ($http_code !~ /^2/) {
-        die "API error (HTTP $http_code): $resp_body\n";
+        if ($http_code eq '' || $http_code eq '000') {
+            die "サーバーに接続できませんでした。ネットワークを確認して、もう一度どうぞ。\n";
+        }
+        die "APIエラー (HTTP $http_code): $resp_body\n";
     }
 
     return MiniJSON::decode($resp_body);
@@ -566,16 +576,25 @@ sub hist_decrypt {
 }
 
 # パスフレーズを画面に表示せずに1行読む
-sub read_secret {
-    my ($prompt) = @_;
-    print $prompt;
-    system('stty', '-echo');
-    my $line = <STDIN>;
-    system('stty', 'echo');
-    print "\n";
-    return undef unless defined $line;
-    chomp $line;
-    return decode('UTF-8', $line, FB_DEFAULT);
+{
+    my $secret_hint_shown = 0;
+    sub read_secret {
+        my ($prompt) = @_;
+        # 「入力しても何も出ない」を知らないと固まったように見えるので、
+        # このセッションで最初のパスフレーズ入力のときだけ一言添える。
+        unless ($secret_hint_shown) {
+            print "（入力中の文字は画面に表示されません。そのまま打って Enter）\n";
+            $secret_hint_shown = 1;
+        }
+        print $prompt;
+        system('stty', '-echo');
+        my $line = <STDIN>;
+        system('stty', 'echo');
+        print "\n";
+        return undef unless defined $line;
+        chomp $line;
+        return decode('UTF-8', $line, FB_DEFAULT);
+    }
 }
 
 # 秘密(パスフレーズ or 合言葉の答え)を指定して包む/開ける。
@@ -1328,7 +1347,15 @@ while (1) {
 
     while (1) {
         my $body = build_request(\@messages, \@TOOLS, $SYSTEM_PROMPT);
-        my $resp = call_api($API_URL, build_headers(), MiniJSON::encode($body));
+        my $resp = eval { call_api($API_URL, build_headers(), MiniJSON::encode($body)) };
+        if ($@) {
+            # 通信エラーなどはプログラムを落とさず、入力プロンプトに戻る。
+            # 取り消せるのは素のユーザー入力のターンのときだけ(ツール応答の
+            # 途中で失敗した場合は履歴を壊さないようそのまま残す)。
+            print "\n$@";
+            pop @messages if @messages && !ref $messages[-1]{content};
+            last;
+        }
 
         my @content_blocks = eval { parse_response($resp) };
         if ($@) {
