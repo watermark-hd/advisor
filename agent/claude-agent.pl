@@ -37,8 +37,10 @@ $| = 1;
 # モデル切り替えは ~/bin/claude (シェルラッパー) 側の -m/--select-model で
 # 行い、ここではCLAUDE_MODEL環境変数を読むだけにして本体は単純に保つ。
 # ------------------------------------------------------------------
-my $LIST_HISTORY = 0;   # --list-history: 保存済みの会話を一覧表示して終了
-my $RESUME       = 0;   # --resume: 保存済みの会話を選んで続きから再開
+my $LIST_HISTORY   = 0;   # --list-history: 保存済みの会話を一覧表示して終了
+my $RESUME         = 0;   # --resume: 保存済みの会話を選んで続きから再開
+my $CHANGE_PASS    = 0;   # --change-passphrase: 履歴パスフレーズを変更して終了
+my $SET_RECOVERY   = 0;   # --set-recovery: 合言葉(復旧用の秘密の質問)を設定して終了
 
 for my $arg (@ARGV) {
     if ($arg eq '--help' || $arg eq '-h') {
@@ -49,18 +51,22 @@ for my $arg (@ARGV) {
         print "claude-agent.pl (high_sierra_claude) 0.1\n";
         exit 0;
     }
-    if ($arg eq '--list-history') { $LIST_HISTORY = 1; }
-    if ($arg eq '--resume')       { $RESUME = 1; }
+    if ($arg eq '--list-history')      { $LIST_HISTORY = 1; }
+    if ($arg eq '--resume')            { $RESUME = 1; }
+    if ($arg eq '--change-passphrase') { $CHANGE_PASS = 1; }
+    if ($arg eq '--set-recovery')      { $SET_RECOVERY = 1; }
 }
 
 sub print_help {
     print <<'EOH';
 使い方: claude-agent.pl [オプション]
 
-  -h, --help        このヘルプを表示
-      --version     バージョンを表示
-      --list-history 保存済みの会話を一覧表示して終了
-      --resume      保存済みの会話を選んで続きから再開
+  -h, --help            このヘルプを表示
+      --version         バージョンを表示
+      --list-history    保存済みの会話を一覧表示して終了
+      --resume          保存済みの会話を選んで続きから再開
+      --change-passphrase 履歴パスフレーズを変更して終了
+      --set-recovery    合言葉(復旧用の秘密の質問)を設定して終了
 
 環境変数:
   ANTHROPIC_API_KEY  (必須) Anthropic APIキー
@@ -86,14 +92,19 @@ my $MAX_TOKENS = 4096;
 my $API_URL   = 'https://api.anthropic.com/v1/messages';
 my $ANTHROPIC_VERSION = '2023-06-01';
 
-# --- 会話履歴(パスフレーズで暗号化してローカル保存) ---
+# --- 会話履歴(暗号化してローカル保存) ---
+# ランダムなマスター鍵で履歴ファイルを暗号化し、そのマスター鍵自体を
+# パスフレーズ(と、任意で「合言葉」)で包んで保存する。どちらか一方で
+# マスター鍵を取り出せるので、パスフレーズを忘れても合言葉で復旧できる。
 my $HISTORY_ENABLED = $ENV{CLAUDE_NO_HISTORY} ? 0 : 1;
 my $HISTORY_DIR     = "$ENV{HOME}/.claude-agent/history";
-my $HISTORY_CHECK   = "$HISTORY_DIR/.check";     # パスフレーズ照合用
-my $HISTORY_TOKEN   = 'high_sierra_claude';      # .check に暗号化して入れる既知の文字列
+my $KEY_FILE        = "$HISTORY_DIR/key.enc";           # マスター鍵をパスフレーズで包んだもの
+my $KEY_RECOVERY    = "$HISTORY_DIR/key.recovery.enc";  # 同じマスター鍵を合言葉の答えで包んだもの(任意)
+my $KEY_RECOVERY_Q  = "$HISTORY_DIR/key.recovery.q";    # 合言葉の質問文(平文)
+my $HISTORY_CHECK   = "$HISTORY_DIR/.check";            # 旧形式。存在すればマスター鍵方式へ移行する
 my $OPENSSL         = $ENV{CLAUDE_OPENSSL} || 'openssl';
 my $STARTED         = _timestamp();
-my $SESSION_FILE;                                # この会話の保存先(unlock後に決定)
+my $SESSION_FILE;                                       # この会話の保存先(unlock後に決定)
 
 my $SYSTEM_PROMPT = <<'EOS';
 You are a lightweight coding assistant running in the terminal of an
@@ -374,31 +385,185 @@ sub read_secret {
     return decode('UTF-8', $line, FB_DEFAULT);
 }
 
-# 履歴用パスフレーズを用意する。初回は新規設定(2回入力して .check を作成)、
-# 2回目以降は .check を復号して照合する。成功したら $ENV{CLAUDE_HIST_PASS}
-# をセットして 1 を返す。失敗/中止なら 0(履歴なしで続行)。
+# 秘密(パスフレーズ or 合言葉の答え)を指定して包む/開ける。
+# CLAUDE_HIST_PASS を一時的に差し替えて hist_encrypt/hist_decrypt を呼ぶ。
+sub _wrap_with {
+    my ($secret, $plaintext, $out_path) = @_;
+    local $ENV{CLAUDE_HIST_PASS} = $secret;
+    return hist_encrypt($plaintext, $out_path);
+}
+sub _unwrap_with {
+    my ($secret, $in_path) = @_;
+    local $ENV{CLAUDE_HIST_PASS} = $secret;
+    return hist_decrypt($in_path);
+}
+
+# ランダムなマスター鍵(64桁hex)を生成する
+sub _gen_master {
+    my $hex = `@{[quote($OPENSSL)]} rand -hex 32 2>/dev/null`;
+    $hex = '' unless defined $hex;
+    $hex =~ s/\s+//g;
+    return ($hex =~ /^[0-9a-f]{64}$/) ? $hex : undef;
+}
+
+# 包まれたマスター鍵を秘密で開ける。取り出せたらhex文字列、ダメならundef。
+sub _open_master {
+    my ($secret, $wrap_path) = @_;
+    my $got = _unwrap_with($secret, $wrap_path);
+    return undef unless defined $got;
+    return $1 if $got =~ /^MASTER:([0-9a-f]{64})/;
+    return undef;
+}
+
+# マスター鍵を秘密で包んで保存する
+sub _save_master {
+    my ($secret, $master, $wrap_path) = @_;
+    my $ok = _wrap_with($secret, "MASTER:$master\n", $wrap_path);
+    chmod 0600, $wrap_path if $ok;
+    return $ok;
+}
+
+# 合言葉の答えを正規化する(大文字小文字と前後・連続空白を無視。
+# 「Toyota Corolla」と「 toyota  corolla 」を同じ扱いにする)
+sub _norm_answer {
+    my ($a) = @_;
+    $a = lc $a;
+    $a =~ s/^\s+//;
+    $a =~ s/\s+$//;
+    $a =~ s/\s+/ /g;
+    return $a;
+}
+
+# 合言葉(復旧用の秘密の質問)を設定/再設定する。$master は既に手元にある前提。
+sub set_recovery {
+    my ($master) = @_;
+    print "質問を入力してください (例: 初めて買った車の名前は?): ";
+    my $q = <STDIN>;
+    $q = defined($q) ? decode('UTF-8', $q, FB_DEFAULT) : '';
+    chomp $q;
+    if ($q eq '') { print "質問が空です。合言葉は設定しませんでした。\n"; return 0; }
+    my $a1 = read_secret("答え: ");
+    my $a2 = read_secret("もう一度入力: ");
+    unless (defined $a1 && $a1 ne '' && defined $a2 && $a1 eq $a2) {
+        print "一致しませんでした。合言葉は設定しませんでした。\n";
+        return 0;
+    }
+    unless (_save_master(_norm_answer($a1), $master, $KEY_RECOVERY)) {
+        print "合言葉の保存に失敗しました。\n";
+        return 0;
+    }
+    _write_private($KEY_RECOVERY_Q, "$q\n");
+    print "合言葉を設定しました(答えは大文字小文字と前後の空白を区別しません)。\n";
+    return 1;
+}
+
+# 新しいパスフレーズを2回入力させてマスター鍵を包み直す
+sub reset_passphrase {
+    my ($master) = @_;
+    my $p1 = read_secret("新しいパスフレーズ: ");
+    my $p2 = read_secret("もう一度入力: ");
+    unless (defined $p1 && $p1 ne '' && defined $p2 && $p1 eq $p2) {
+        print "一致しませんでした。パスフレーズは変更しません。\n";
+        return 0;
+    }
+    if (_save_master($p1, $master, $KEY_FILE)) { print "変更しました。\n"; return 1; }
+    print "変更に失敗しました。\n";
+    return 0;
+}
+
+# 合言葉で復旧する。成功したらマスター鍵hexを返す(ついでにパスフレーズの
+# 再設定を促す)。中止/失敗の抜け道は「空Enter」。
+sub recover_with_phrase {
+    my $q = '';
+    if (open(my $qf, '<:encoding(UTF-8)', $KEY_RECOVERY_Q)) {
+        $q = <$qf>;
+        close $qf;
+        chomp $q if defined $q;
+    }
+    print "合言葉の質問: $q\n" if defined $q && $q ne '';
+    while (1) {
+        my $ans = read_secret("答え (空Enterで中止): ");
+        return undef unless defined $ans && $ans ne '';
+        my $master = _open_master(_norm_answer($ans), $KEY_RECOVERY);
+        if (defined $master) {
+            print "復旧しました。\n";
+            print "新しいパスフレーズを設定しますか? [y/N] ";
+            my $yn = <STDIN>;
+            reset_passphrase($master) if defined $yn && $yn =~ /^y/i;
+            return $master;
+        }
+        print "答えが違います。もう一度どうぞ。\n";
+    }
+}
+
+# 旧形式(.check 直接暗号化 + 履歴ファイルもパスフレーズ直接暗号化)から
+# マスター鍵方式へ移行する。成功したらマスター鍵hexを返す。
+sub migrate_check_file {
+    print "履歴の保存形式を更新します。現在のパスフレーズを入力してください。\n";
+    while (1) {
+        my $pass = read_secret("履歴パスフレーズ (空Enterで中止): ");
+        return undef unless defined $pass && $pass ne '';
+        my $got = _unwrap_with($pass, $HISTORY_CHECK);
+        if (defined $got) {
+            chomp $got;
+            if ($got eq 'high_sierra_claude') {
+                my $master = _gen_master();
+                return undef unless defined $master;
+                # 既存の履歴ファイルを パスフレーズ→マスター鍵 で再暗号化
+                for my $f (history_files()) {
+                    my $plain = _unwrap_with($pass, "$HISTORY_DIR/$f");
+                    _wrap_with($master, $plain, "$HISTORY_DIR/$f") if defined $plain;
+                }
+                unless (_save_master($pass, $master, $KEY_FILE)) {
+                    print "更新に失敗しました。今回は履歴を保存せずに続けます。\n";
+                    return undef;
+                }
+                unlink $HISTORY_CHECK;
+                print "更新しました。\n";
+                return $master;
+            }
+        }
+        print "パスフレーズが違います。もう一度どうぞ。\n";
+    }
+}
+
+# 履歴のロックを解除し、$ENV{CLAUDE_HIST_PASS} にマスター鍵をセットして
+# 1 を返す。初回は新規設定、以降はパスフレーズ(または合言葉)で解錠する。
+# 中止/失敗なら 0(履歴なしで続行)。
 sub unlock_history {
     for my $d ("$ENV{HOME}/.claude-agent", $HISTORY_DIR) {
         mkdir($d, 0700) unless -d $d;
     }
 
-    if (-f $HISTORY_CHECK) {
-        # 回数制限は設けない。何度でも打ち直せる。履歴なしで進めたいときは
-        # 何も入力せずEnter(または Ctrl-C / Ctrl-D)で抜けられる。
+    # 旧形式の移行
+    if (-f $HISTORY_CHECK && ! -f $KEY_FILE) {
+        my $master = migrate_check_file();
+        if (defined $master) { $ENV{CLAUDE_HIST_PASS} = $master; return 1; }
+        return 0;
+    }
+
+    # 2回目以降: パスフレーズ or 合言葉で解錠
+    if (-f $KEY_FILE) {
+        my $has_recovery = (-f $KEY_RECOVERY && -f $KEY_RECOVERY_Q) ? 1 : 0;
+        # 回数制限なし。履歴なしで進めたいときは空Enterで抜ける。
         while (1) {
-            my $pass = read_secret("履歴パスフレーズ (空Enterで履歴なしのまま起動): ");
+            my $prompt = $has_recovery
+                ? "履歴パスフレーズ (空Enter=履歴なしで起動 / r=合言葉で復旧): "
+                : "履歴パスフレーズ (空Enterで履歴なしのまま起動): ";
+            my $pass = read_secret($prompt);
             unless (defined $pass && $pass ne '') {
                 print "今回は履歴を保存せずに起動します。\n";
                 return 0;
             }
-            $ENV{CLAUDE_HIST_PASS} = $pass;
-            my $got = hist_decrypt($HISTORY_CHECK);
-            if (defined $got) {
-                chomp $got;
-                return 1 if $got eq $HISTORY_TOKEN;
+            if ($has_recovery && $pass eq 'r') {
+                my $master = recover_with_phrase();
+                if (defined $master) { $ENV{CLAUDE_HIST_PASS} = $master; return 1; }
+                next;
             }
-            delete $ENV{CLAUDE_HIST_PASS};
-            print "パスフレーズが違います。もう一度どうぞ。\n";
+            my $master = _open_master($pass, $KEY_FILE);
+            if (defined $master) { $ENV{CLAUDE_HIST_PASS} = $master; return 1; }
+            print "パスフレーズが違います。もう一度どうぞ。";
+            print $has_recovery ? " (合言葉で復旧するには r)\n" : "\n";
         }
     }
 
@@ -411,14 +576,23 @@ sub unlock_history {
         print "一致しませんでした。今回は履歴を保存せずに続けます。\n";
         return 0;
     }
-    $ENV{CLAUDE_HIST_PASS} = $p1;
-    unless (hist_encrypt($HISTORY_TOKEN . "\n", $HISTORY_CHECK)) {
-        print "パスフレーズの保存に失敗しました。今回は履歴を保存せずに続けます。\n";
-        delete $ENV{CLAUDE_HIST_PASS};
+    my $master = _gen_master();
+    unless (defined $master) {
+        print "鍵の生成に失敗しました(openssl rand)。今回は履歴を保存せずに続けます。\n";
         return 0;
     }
-    chmod 0600, $HISTORY_CHECK;
+    unless (_save_master($p1, $master, $KEY_FILE)) {
+        print "鍵の保存に失敗しました。今回は履歴を保存せずに続けます。\n";
+        return 0;
+    }
     print "設定しました。\n";
+
+    print "\n合言葉(秘密の質問)も設定できます。パスフレーズを忘れたときの復旧用です。任意。\n";
+    print "設定しますか? [y/N] ";
+    my $yn = <STDIN>;
+    set_recovery($master) if defined $yn && $yn =~ /^y/i;
+
+    $ENV{CLAUDE_HIST_PASS} = $master;
     return 1;
 }
 
@@ -840,6 +1014,18 @@ my @messages;
 # --- 履歴: ロック解除 / 一覧表示 / 再開 ---
 if ($HISTORY_ENABLED) {
     $HISTORY_ENABLED = unlock_history();
+}
+
+if ($CHANGE_PASS) {
+    unless ($HISTORY_ENABLED) { print "履歴は利用できません。\n"; exit 1; }
+    reset_passphrase($ENV{CLAUDE_HIST_PASS});   # unlock後、CLAUDE_HIST_PASSにはマスター鍵が入っている
+    exit 0;
+}
+
+if ($SET_RECOVERY) {
+    unless ($HISTORY_ENABLED) { print "履歴は利用できません。\n"; exit 1; }
+    set_recovery($ENV{CLAUDE_HIST_PASS});
+    exit 0;
 }
 
 if ($LIST_HISTORY) {

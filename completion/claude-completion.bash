@@ -9,7 +9,7 @@ _claude_completions() {
     COMPREPLY=()
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
-    opts="-h --help --version -m --model --select-model --list-models --list-history --resume --no-history"
+    opts="-h --help --version -m --model --select-model --list-models --list-history --resume --no-history --change-passphrase --set-recovery"
     models_file="$HOME/claude-build/models.txt"
 
     case "$prev" in

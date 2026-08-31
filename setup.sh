@@ -130,13 +130,15 @@ show_help() {
   -m, --model <ID>        このセッションだけモデルを指定して起動
       --select-model      モデルを選ぶメニューを表示し、既定として保存
       --list-models       選択可能なモデルの一覧を表示
-      --list-history      保存済みの会話を一覧表示 (パスフレーズが必要)
-      --resume            保存済みの会話を選んで続きから再開
-      --no-history        今回は会話を保存しない (パスフレーズも尋ねない)
+      --list-history        保存済みの会話を一覧表示 (パスフレーズが必要)
+      --resume              保存済みの会話を選んで続きから再開
+      --no-history          今回は会話を保存しない (パスフレーズも尋ねない)
+      --change-passphrase   履歴パスフレーズを変更
+      --set-recovery        合言葉 (パスフレーズを忘れたとき用の秘密の質問) を設定
 
 引数なしで実行すると、保存済みの設定でエージェントを起動します。
 会話は既定で ~/.claude-agent/history に暗号化して保存されます
-(初回起動時にパスフレーズを設定)。
+(初回起動時にパスフレーズを設定。合言葉も任意で設定できます)。
 EOF
 }
 
@@ -178,6 +180,8 @@ while [ \$# -gt 0 ]; do
     --select-model) select_model; shift ;;
     --list-history) PERL_ARGS[\${#PERL_ARGS[@]}]="--list-history"; shift ;;
     --resume) PERL_ARGS[\${#PERL_ARGS[@]}]="--resume"; shift ;;
+    --change-passphrase) PERL_ARGS[\${#PERL_ARGS[@]}]="--change-passphrase"; shift ;;
+    --set-recovery) PERL_ARGS[\${#PERL_ARGS[@]}]="--set-recovery"; shift ;;
     --no-history) export CLAUDE_NO_HISTORY=1; shift ;;
     -m|--model)
       export CLAUDE_MODEL="\$2"
