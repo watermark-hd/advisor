@@ -34,6 +34,28 @@ binmode STDERR, ':encoding(UTF-8)';
 # 表示がAPI応答まで遅延して見えることがあるため、明示的に毎回flushする。
 $| = 1;
 
+# 端末設定を起動時に控えておき、どんな終わり方をしても必ず元に戻す。
+# read_line_interactive は端末を raw モードにするので、途中で die すると
+# 端末が壊れたまま(入力が見えない・改行されない)になってしまう。
+our $ORIG_STTY = `stty -g 2>/dev/null`;
+chomp $ORIG_STTY;
+sub restore_tty { system('stty', $ORIG_STTY) if $ORIG_STTY ne ''; }
+END { restore_tty(); }
+$SIG{INT}  = sub { restore_tty(); print "\n中断しました。\n"; exit 130; };
+$SIG{TERM} = sub { restore_tty(); exit 143; };
+
+# 不具合調査用。環境変数 CLAUDE_DEBUG_LOG にファイルパスを設定すると、
+# API のリクエスト概要・HTTPコード・生レスポンス・捕捉した例外を追記する。
+sub dbg {
+    return unless $ENV{CLAUDE_DEBUG_LOG};
+    my $msg = join('', @_);
+    if (open(my $fh, '>>:encoding(UTF-8)', $ENV{CLAUDE_DEBUG_LOG})) {
+        my @t = localtime;
+        printf $fh "[%02d:%02d:%02d] %s\n", $t[2], $t[1], $t[0], $msg;
+        close $fh;
+    }
+}
+
 # ------------------------------------------------------------------
 # コマンドライン引数 (--help / --version はAPIキー無しでも動作させる)
 # モデル切り替えは ~/bin/claude (シェルラッパー) 側の -m/--select-model で
@@ -459,30 +481,48 @@ sub call_api {
     print $cf qq(show-error\n);
     close $cf;
 
+    dbg("REQ $PROVIDER $MODEL -> $url  (" . length($body_json) . " bytes)");
+
     # 応答待ちのあいだ画面が固まって見えないよう、一言出しておいて
     # 返ってきたら消す(古い機械だと初回接続で数秒〜十数秒かかる)。
     print "  問い合わせ中...";
     my $http_code = `@{[quote($CURL)]} -K @{[quote($tmp_config)]}`;
+    $http_code = '' unless defined $http_code;
+    $http_code =~ s/\s+//g;
     print "\r\x1b[K";
     unlink $tmp_req, $tmp_config;
 
+    # レスポンスは生バイトで読んでからまとめてデコードする。
+    # :encoding(UTF-8) 層でそのまま読むと、マルチバイト文字がバッファ境界で
+    # 割れたときに "utf8 does not map to Unicode" で落ちることがある
+    # (ppc_claude_cli で踏んだのと同じ罠。日本語を多く含む長い応答で出やすい)。
     my $resp_body = '';
-    if (open(my $rf, '<:encoding(UTF-8)', $tmp_resp)) {
+    if (open(my $rf, '<:raw', $tmp_resp)) {
         local $/;
-        $resp_body = <$rf>;
+        my $bytes = <$rf>;
         close $rf;
-        $resp_body = '' unless defined $resp_body;
+        $resp_body = defined($bytes) ? decode('UTF-8', $bytes, FB_DEFAULT) : '';
     }
     unlink $tmp_resp;
 
+    dbg("RESP HTTP=$http_code  (" . length($resp_body) . " chars)\n$resp_body");
+
     if ($http_code !~ /^2/) {
         if ($http_code eq '' || $http_code eq '000') {
-            die "サーバーに接続できませんでした。ネットワークを確認して、もう一度どうぞ。\n";
+            die "サーバーに接続できませんでした。通信環境を確認して、もう一度どうぞ。\n";
         }
-        die "APIエラー (HTTP $http_code): $resp_body\n";
+        # 本文が長いと画面が流れてしまうので、頭だけ見せる。
+        my $brief = $resp_body;
+        $brief =~ s/\s+/ /g;
+        $brief = substr($brief, 0, 300) . ' …' if length($brief) > 300;
+        die "APIエラー (HTTP $http_code): $brief\n";
     }
 
-    return MiniJSON::decode($resp_body);
+    my $data = eval { MiniJSON::decode($resp_body) };
+    if ($@ || !defined $data) {
+        die "応答をうまく解釈できませんでした。もう一度どうぞ。\n";
+    }
+    return $data;
 }
 
 sub quote {
@@ -1432,18 +1472,17 @@ if (@MODEL_CHOICES) {
 }
 print "\nこんにちは。(終了は 'exit' または Ctrl-D)\n";
 
-while (1) {
-    my $input = read_line_interactive("\nご用件をどうぞ> ");
-    last unless defined $input;
-    # 行全体(生バイト)が揃ってから、まとめてUTF-8デコードする
-    $input = decode('UTF-8', $input, FB_DEFAULT);
-    next if $input eq '';
-    last if $input eq 'exit';
+# 1ターン分の処理。'quit' を返したら会話終了、それ以外は継続。
+# ここで die しても、呼び出し側の eval が受け止めてプログラムは落ちない。
+sub handle_turn {
+    my ($input) = @_;
+
+    return 'quit' if $input eq 'exit';
 
     # 一覧を出す
     if ($input eq '/model' || $input eq '/models' || $input eq '/m' || $input eq '?') {
         show_model_menu();
-        next;
+        return;
     }
 
     # 番号だけ打ったら、その番号のAIに切り替える(人間に一番やさしい操作)
@@ -1451,12 +1490,10 @@ while (1) {
         my $n = $1;
         if ($n >= 1 && $n <= @MODEL_CHOICES) {
             my $id = $MODEL_CHOICES[$n - 1][0];
-            if ($id eq $MODEL) {
-                print "\nすでに [$PROVIDER / $MODEL] です。\n";
-            } else {
-                switch_to_model($id);
-            }
-            next;
+            ($id eq $MODEL)
+                ? print "\nすでに [$PROVIDER / $MODEL] です。\n"
+                : switch_to_model($id);
+            return;
         }
         # 範囲外の数字はふつうの発言として扱う(下へ流れる)
     }
@@ -1464,14 +1501,12 @@ while (1) {
     # /model 3 や /model <ID> でも指定できる
     if ($input =~ m{^/models?\s+(\S.*?)\s*$}) {
         my $arg = $1;
-        my $id;
-        if ($arg =~ /^\d+$/ && @MODEL_CHOICES && $arg >= 1 && $arg <= @MODEL_CHOICES) {
-            $id = $MODEL_CHOICES[$arg - 1][0];
-        } else {
-            $id = $arg;
-        }
-        ($id eq $MODEL) ? print "\nすでに [$PROVIDER / $MODEL] です。\n" : switch_to_model($id);
-        next;
+        my $id = ($arg =~ /^\d+$/ && @MODEL_CHOICES && $arg >= 1 && $arg <= @MODEL_CHOICES)
+            ? $MODEL_CHOICES[$arg - 1][0] : $arg;
+        ($id eq $MODEL)
+            ? print "\nすでに [$PROVIDER / $MODEL] です。\n"
+            : switch_to_model($id);
+        return;
     }
 
     # プロバイダ(Claude/Gemini)だけ切り替える
@@ -1485,7 +1520,7 @@ while (1) {
             persist_env('CLAUDE_MODEL', $MODEL);
             print "\n→ [$PROVIDER / $MODEL] にしました。会話はそのまま引き継がれます。\n";
         }
-        next;
+        return;
     }
 
     push @messages, { role => 'user', content => $input };
@@ -1494,29 +1529,40 @@ while (1) {
         my $body = build_request(\@messages, \@TOOLS, $SYSTEM_PROMPT);
         my $resp = eval { call_api($API_URL, build_headers(), MiniJSON::encode($body)) };
         if ($@) {
-            # 通信エラーなどはプログラムを落とさず、入力プロンプトに戻る。
-            # 取り消せるのは素のユーザー入力のターンのときだけ(ツール応答の
-            # 途中で失敗した場合は履歴を壊さないようそのまま残す)。
+            # 通信エラーなど。素のユーザー発言のターンなら取り消して戻る
+            # (ツール応答の途中なら履歴を壊さないよう残す)。
             print "\n$@";
             pop @messages if @messages && !ref $messages[-1]{content};
-            last;
+            return;
         }
 
         my @content_blocks = eval { parse_response($resp) };
         if ($@) {
-            print $@;
-            last;
+            print "\n$@";
+            pop @messages if @messages && !ref $messages[-1]{content};
+            return;
         }
+
+        # 空の応答(安全フィルタ・トークン上限で本文なし 等)。空の assistant
+        # ターンを履歴に入れると以後ずっと壊れるので、入れずに戻る。
+        unless (@content_blocks) {
+            print "\n(AIからの応答が空でした。言い方を変えてもう一度どうぞ)\n";
+            pop @messages if @messages && !ref $messages[-1]{content};
+            return;
+        }
+
         push @messages, { role => 'assistant', content => \@content_blocks };
 
         my @tool_results;
         for my $block (@content_blocks) {
-            if ($block->{type} eq 'text') {
+            my $t = $block->{type} || '';
+            if ($t eq 'text') {
                 print "\n$PROVIDER> $block->{text}\n";
             }
-            elsif ($block->{type} eq 'tool_use') {
+            elsif ($t eq 'tool_use') {
                 print "\n[tool_use] $block->{name}(" . MiniJSON::encode($block->{input}) . ")\n";
-                my $result = run_tool($block->{name}, $block->{input});
+                my $result = eval { run_tool($block->{name}, $block->{input}) };
+                $result = "ツール実行でエラーが出ました: $@" if $@;
                 push @tool_results, {
                     type        => 'tool_result',
                     tool_use_id => $block->{id},
@@ -1530,11 +1576,46 @@ while (1) {
             push @messages, { role => 'user', content => \@tool_results };
             next; # ツール結果を送ってもう一度APIを呼ぶ
         }
-
-        last; # tool_useが無ければこのターンは終了
+        return; # tool_useが無ければこのターンは終了
     }
+}
 
-    save_history(\@messages) if $HISTORY_ENABLED;
+# --- メインループ ---
+# 1ターンごとに eval で囲み、どこで die が起きてもプログラム全体は落とさず
+# 入力プロンプトに戻す。端末設定も毎回念のため戻す。
+while (1) {
+    my $input = eval { read_line_interactive("\nご用件をどうぞ> ") };
+    if ($@) {
+        restore_tty();
+        dbg("readline error: $@");
+        print "\n[入力エラー] 続けます。\n";
+        next;
+    }
+    last unless defined $input;
+
+    $input = eval { decode('UTF-8', $input, FB_DEFAULT) };
+    $input = '' unless defined $input;
+    next if $input eq '';
+
+    my $r = eval { handle_turn($input) };
+    if ($@) {
+        restore_tty();
+        dbg("turn error: $@");
+        print "\n────────\n";
+        print "うまく処理できませんでした(このまま続けられます)。\n";
+        print "何度も起きるようなら、一度 exit して\n";
+        print "  CLAUDE_DEBUG_LOG=\$HOME/advisor-debug.txt advisor\n";
+        print "で起動し直し、~/advisor-debug.txt を見せてください。\n";
+        print "────────\n";
+        # 半端な履歴を1つ戻して、次の発言から再開できるようにする
+        pop @messages if @messages
+            && ($messages[-1]{role} eq 'assistant' || ref $messages[-1]{content});
+        next;
+    }
+    last if defined $r && $r eq 'quit';
+
+    eval { save_history(\@messages) if $HISTORY_ENABLED };
+    dbg("save_history error: $@") if $@;
 }
 
 print "\nさようなら。\n";
