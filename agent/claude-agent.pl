@@ -129,6 +129,107 @@ sub configure_provider {
     $PROVIDER = $provider;
 }
 
+# 選べるAIの一覧 ([id, 説明], ...)。ラッパーが CLAUDE_MODELS_FILE で場所を教える。
+my @MODEL_CHOICES;
+if ($ENV{CLAUDE_MODELS_FILE} && open(my $mf, '<:encoding(UTF-8)', $ENV{CLAUDE_MODELS_FILE})) {
+    while (my $l = <$mf>) {
+        chomp $l;
+        next unless $l =~ /\S/;
+        my ($id, $desc) = split /\|/, $l, 2;
+        push @MODEL_CHOICES, [ $id, (defined $desc && $desc ne '') ? $desc : $id ];
+    }
+    close $mf;
+}
+
+# ~/.claude-agent-env の1行を差し替える(無ければ追記)。会話中の切り替えを
+# 次回起動にも引き継ぐため。
+sub persist_env {
+    my ($var, $val) = @_;
+    return unless $ENV_FILE_PATH;
+    my @lines;
+    if (open(my $in, '<', $ENV_FILE_PATH)) {
+        while (my $l = <$in>) {
+            push @lines, $l unless $l =~ /^export \Q$var\E=/;
+        }
+        close $in;
+    }
+    push @lines, "export $var=$val\n";
+    if (open(my $out, '>', $ENV_FILE_PATH)) {
+        print $out @lines;
+        close $out;
+        chmod 0600, $ENV_FILE_PATH;
+    }
+}
+
+# 会話中にプロバイダ(Claude/Gemini)を切り替える。キーが無ければその場で
+# 入力してもらい、任意で保存する。成功したら 1、中止/失敗なら 0。
+sub switch_provider {
+    my ($target) = @_;
+    eval { configure_provider($target) };
+    return 1 unless $@;   # キーが揃っていてそのまま切り替えOK
+
+    my $key_name = $target eq 'gemini' ? 'GEMINI_API_KEY' : 'ANTHROPIC_API_KEY';
+    my $key = read_secret("\n$key_name が未設定です。貼り付けてEnter(空Enterでキャンセル): ");
+    if (!defined $key || $key eq '') {
+        print "キャンセルしました。[$PROVIDER / $MODEL] のままです。\n";
+        return 0;
+    }
+    $ENV{$key_name} = $key;
+    eval { configure_provider($target) };
+    if ($@) { print "それでも切り替えられませんでした: $@"; return 0; }
+    print "このキーを $ENV_FILE_PATH に保存しますか? [y/N] ";
+    my $yn = <STDIN>;
+    if (defined $yn && $yn =~ /^y/i) {
+        persist_env($key_name, $key);
+        print "保存しました。\n";
+    }
+    return 1;
+}
+
+# 選べるAIの一覧を番号付きで表示する
+sub show_model_menu {
+    unless (@MODEL_CHOICES) {
+        print "\n(モデル一覧が読み込めません)\n";
+        return;
+    }
+    print "\n";
+    my $i = 1;
+    for my $c (@MODEL_CHOICES) {
+        my $mark = ($c->[0] eq $MODEL) ? ' ← 使用中' : '';
+        printf "  %d) %s%s\n", $i++, $c->[1], $mark;
+    }
+    print "番号を入力すると切り替わります。そのまま質問してもOK。\n";
+}
+
+# 指定したモデルIDに切り替える。必要ならプロバイダも一緒に切り替え、
+# 次回起動に引き継ぐため ~/.claude-agent-env にも書く。
+sub switch_to_model {
+    my ($id) = @_;
+    my $target_provider = ($id =~ /^gemini/) ? 'gemini' : 'anthropic';
+    my $prev_model = $ENV{CLAUDE_MODEL};
+    $ENV{CLAUDE_MODEL} = $id;
+
+    my $ok = 1;
+    if ($target_provider ne $PROVIDER) {
+        $ok = switch_provider($target_provider);
+    }
+    else {
+        eval { configure_provider($PROVIDER) };  # $MODEL と(Geminiの)$API_URL を作り直す
+        if ($@) { print $@; $ok = 0; }
+    }
+
+    unless ($ok) {
+        # 切り替え失敗。元のモデルに戻す。
+        if (defined $prev_model) { $ENV{CLAUDE_MODEL} = $prev_model } else { delete $ENV{CLAUDE_MODEL} }
+        eval { configure_provider($PROVIDER) };
+        return;
+    }
+
+    persist_env('CLAUDE_MODEL', $MODEL);
+    persist_env('CLAUDE_PROVIDER', $PROVIDER);
+    print "\n→ [$PROVIDER / $MODEL] にしました。\n";
+}
+
 configure_provider($ENV{CLAUDE_PROVIDER} || 'anthropic');
 
 # --- 会話履歴(暗号化してローカル保存) ---
@@ -1290,9 +1391,13 @@ if ($HISTORY_ENABLED && !$SESSION_FILE) {
 }
 
 print "=== high_sierra Advisor ===\n";
-print "[$PROVIDER / $MODEL]\n";
 print $HISTORY_ENABLED ? "履歴: 暗号化して保存します\n" : "履歴: 保存しません\n";
-print "こんにちは。(終了は 'exit' または Ctrl-D。AI切り替えは /claude か /gemini)\n";
+if (@MODEL_CHOICES) {
+    show_model_menu();
+} else {
+    print "[$PROVIDER / $MODEL]\n";
+}
+print "\nこんにちは。(終了は 'exit' または Ctrl-D)\n";
 
 while (1) {
     my $input = read_line_interactive("\nご用件をどうぞ> ");
@@ -1302,43 +1407,50 @@ while (1) {
     next if $input eq '';
     last if $input eq 'exit';
 
+    # 一覧を出す
+    if ($input eq '/model' || $input eq '/models' || $input eq '/m' || $input eq '?') {
+        show_model_menu();
+        next;
+    }
+
+    # 番号だけ打ったら、その番号のAIに切り替える(人間に一番やさしい操作)
+    if ($input =~ /^\s*(\d+)\s*$/ && @MODEL_CHOICES) {
+        my $n = $1;
+        if ($n >= 1 && $n <= @MODEL_CHOICES) {
+            my $id = $MODEL_CHOICES[$n - 1][0];
+            if ($id eq $MODEL) {
+                print "\nすでに [$PROVIDER / $MODEL] です。\n";
+            } else {
+                switch_to_model($id);
+            }
+            next;
+        }
+        # 範囲外の数字はふつうの発言として扱う(下へ流れる)
+    }
+
+    # /model 3 や /model <ID> でも指定できる
+    if ($input =~ m{^/models?\s+(\S.*?)\s*$}) {
+        my $arg = $1;
+        my $id;
+        if ($arg =~ /^\d+$/ && @MODEL_CHOICES && $arg >= 1 && $arg <= @MODEL_CHOICES) {
+            $id = $MODEL_CHOICES[$arg - 1][0];
+        } else {
+            $id = $arg;
+        }
+        ($id eq $MODEL) ? print "\nすでに [$PROVIDER / $MODEL] です。\n" : switch_to_model($id);
+        next;
+    }
+
+    # プロバイダ(Claude/Gemini)だけ切り替える
     if ($input eq '/claude' || $input eq '/gemini') {
         my $target = $input eq '/claude' ? 'anthropic' : 'gemini';
         if ($target eq $PROVIDER) {
             print "\nすでに [$PROVIDER / $MODEL] です。\n";
         }
-        else {
-            eval { configure_provider($target) };
-            if ($@) {
-                # キーが無くて切り替えられない。その場で入力してもらう。
-                # 空Enterでキャンセルすれば元のプロバイダのまま続けられる。
-                my $key_name = $target eq 'gemini' ? 'GEMINI_API_KEY' : 'ANTHROPIC_API_KEY';
-                my $key = read_secret("\n$key_name が未設定です。貼り付けてEnter(空Enterでキャンセル): ");
-                if (!defined $key || $key eq '') {
-                    print "キャンセルしました。[$PROVIDER / $MODEL] のままです。\n";
-                }
-                else {
-                    $ENV{$key_name} = $key;
-                    eval { configure_provider($target) };
-                    if ($@) {
-                        print "それでも切り替えられませんでした: $@";
-                    }
-                    else {
-                        print "[$PROVIDER / $MODEL] に切り替えました。会話はそのまま引き継がれます。\n";
-                        print "このキーを $ENV_FILE_PATH に保存しますか? [y/N] ";
-                        my $yn = <STDIN>;
-                        if (defined $yn && $yn =~ /^y/i && open(my $ef, '>>', $ENV_FILE_PATH)) {
-                            print $ef "export $key_name=$key\n";
-                            close $ef;
-                            chmod 0600, $ENV_FILE_PATH;
-                            print "保存しました。\n";
-                        }
-                    }
-                }
-            }
-            else {
-                print "\n[$PROVIDER / $MODEL] に切り替えました。会話はそのまま引き継がれます。\n";
-            }
+        elsif (switch_provider($target)) {
+            persist_env('CLAUDE_PROVIDER', $PROVIDER);
+            persist_env('CLAUDE_MODEL', $MODEL);
+            print "\n→ [$PROVIDER / $MODEL] にしました。会話はそのまま引き継がれます。\n";
         }
         next;
     }

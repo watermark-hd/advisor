@@ -27,16 +27,27 @@ bash補完の設置、ダブルクリック用 `Advisor.app` の生成、疎通�
 
 ## 使うAI (Claude / Gemini)
 
-`setup.sh` で選びます。既定は **Gemini**(無料枠あり・クレジットカード不要、
-[aistudio.google.com/apikey](https://aistudio.google.com/apikey) でキー発行)。
-**Anthropic (Claude)** は高性能ですが従量課金です
-([console.anthropic.com](https://console.anthropic.com/) でキー発行 + Billing でチャージ)。
+初回は `setup.sh` で選びます。以降の切り替えは、**起動後に一覧の番号を入力するだけ**です:
 
-- 選択結果は `~/.claude-agent-env` に `CLAUDE_PROVIDER` として保存されます。
-- 会話中に **`/claude`** / **`/gemini`** と打つとその場で切り替えられます
-  (会話履歴は引き継がれる)。切り替え先のキーが未設定なら、その場で貼り付けて
-  保存するか聞かれます。普段は無料のGemini、重い作業のときだけClaude、といった使い分けができます。
-- Geminiは単純な質問でも思考に時間をかけがちなので、既定で思考を浅く(`LOW`)しています。
+```
+  1) Claude Opus 5 — 最高性能・有料
+  2) Claude Sonnet 5 — バランス型・有料
+  3) Claude Haiku 4.5 — 高速・有料
+  4) Gemini Flash-Lite — 速い・無料   ← 使用中
+  5) Gemini Flash — 高性能・無料
+番号を入力すると切り替わります。そのまま質問してもOK。
+
+ご用件をどうぞ> 3        ← これだけで Haiku に切り替わる
+```
+
+- 一覧をもう一度見たいときは **`/model`**(または `?`)。
+- 番号で選ぶと、そのAIのプロバイダ(Claude/Gemini)も自動で合わせ、`~/.claude-agent-env` に
+  保存されて次回起動にも引き継がれます。選んだAIのキーが未登録なら、その場で貼り付けて
+  保存するか聞かれます。
+- プロバイダだけ切り替えたいときは **`/claude`** / **`/gemini`**。
+- 無料の **Gemini**: [aistudio.google.com/apikey](https://aistudio.google.com/apikey) でキー発行(カード不要)。
+  有料の **Claude**: [console.anthropic.com](https://console.anthropic.com/) でキー発行 + Billing でチャージ。
+- Geminiは単純な質問でも思考に時間をかけがちなので、既定で思考を浅く(`LOW`)。
   深く考えさせたいときは `CLAUDE_GEMINI_THINKING=high`。
 
 ## ダブルクリックで起動 (Advisor.app)
@@ -52,26 +63,37 @@ Dockやデスクトップに置いておくと次回から一発です。
 エージェント本体(`agent/claude-agent.pl`)は対話ループのみのシンプルな作りのままにし、
 オプション処理やモデル選択メニューは `~/bin/advisor` (bashラッパー、setup.shが生成)側に持たせています。
 
+**基本はこれだけ:**
+
 ```
-advisor                     保存済みの設定で起動
-advisor --select-model      使うAIを選ぶ(番号入りメニュー)
-advisor --select-model 3    番号を付ければ即決定(この例なら3番)
-advisor --list-models       使えるAIの一覧
-advisor -m <ID>             今回だけ別のAIで起動
-advisor --list-history      保存済みの会話を一覧表示 (パスフレーズが必要)
-advisor --resume            保存済みの会話を選んで続きから再開
-advisor --no-history        今回は会話を保存しない (パスフレーズも尋ねない)
-advisor --change-passphrase 履歴パスフレーズを変更
-advisor --set-recovery      合言葉 (パスフレーズを忘れたとき用) を設定
-advisor -h, --help          ヘルプ / advisor --version  バージョン
+advisor            起動する
+（一覧が出るので）番号を入力    使うAIを切り替える
+質問を打つ                     答えが返る
+exit                           終わる
 ```
 
-会話中に `/claude` / `/gemini` でAIを切り替え、`exit` または Ctrl-D で終了します。
+会話中に使えるもの:
 
-`--select-model` は `~/.claude-agent-env` の `CLAUDE_MODEL` と `CLAUDE_PROVIDER` を
-**セットで**書き換えます(Geminiのモデルを選べばプロバイダもGeminiになる)。選んだAIの
-キーが未登録なら、その場で `/claude`・`/gemini` から登録する案内が出ます。
-`-m <ID>` も同様に、`gemini…` / `claude…` の名前からプロバイダを自動で合わせます。
+| 打つもの | 何が起きる |
+|---|---|
+| `1`〜`5`(番号) | そのAIに切り替え(プロバイダも自動・次回に引き継ぐ) |
+| `/model` または `?` | AIの一覧をもう一度表示 |
+| `/claude` / `/gemini` | プロバイダだけ切り替え |
+| `exit` / Ctrl-D | 終了 |
+
+シェルから使うオプション（必要なときだけ）:
+
+```
+advisor --select-model [番号] 使うAIをシェルから決める
+advisor --list-models         使えるAIの一覧
+advisor -m <ID>               今回だけ別のAIで起動
+advisor --list-history        保存済みの会話を一覧表示
+advisor --resume              保存済みの会話を続きから
+advisor --no-history          今回は保存しない
+advisor --change-passphrase   履歴パスフレーズを変更
+advisor --set-recovery        合言葉を設定
+advisor -h / --version        ヘルプ / バージョン
+```
 
 新しいターミナルでは `advisor ` と打ってTabキーを押すとオプション名が、
 `advisor -m ` の後でTabを押すと選択可能なモデルIDが補完されます

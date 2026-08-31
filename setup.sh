@@ -183,7 +183,8 @@ show_help() {
       --set-recovery      合言葉 (パスフレーズを忘れたとき用の秘密の質問) を設定
 
 引数なしで実行すると、保存済みの設定で起動します。
-使うAIは --select-model で選べます(会話中は /claude・/gemini でも切替可)。
+使うAIは、起動後に一覧の番号を入力するだけで切り替わります(一覧の再表示は /model)。
+シェルから決めたいときは --select-model [番号]。
 会話は既定で ~/.claude-agent/history に暗号化保存されます
 (初回起動時にパスフレーズを設定。合言葉も任意で設定できます)。
 EOF
@@ -276,6 +277,7 @@ done
 
 export CLAUDE_CURL="\$CURL_BIN"
 [ -n "\$CACERT" ] && export CLAUDE_CACERT="\$CACERT"
+export CLAUDE_MODELS_FILE="\$MODELS_FILE"
 if [ \${#PERL_ARGS[@]} -gt 0 ]; then
   exec perl "\$AGENT_SCRIPT" "\${PERL_ARGS[@]}"
 else
