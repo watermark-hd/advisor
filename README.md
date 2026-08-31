@@ -53,24 +53,25 @@ Dockやデスクトップに置いておくと次回から一発です。
 オプション処理やモデル選択メニューは `~/bin/advisor` (bashラッパー、setup.shが生成)側に持たせています。
 
 ```
-advisor                    保存済みの設定で起動
-advisor -h, --help         ヘルプを表示
-advisor --version          バージョンを表示
-advisor -m <ID>            このセッションだけモデルを指定して起動
-advisor --select-model     モデルを選ぶメニューを表示し、既定として保存
-advisor --list-models      選択可能なモデルの一覧を表示
-advisor --list-history     保存済みの会話を一覧表示 (パスフレーズが必要)
-advisor --resume           保存済みの会話を選んで続きから再開
-advisor --no-history       今回は会話を保存しない (パスフレーズも尋ねない)
+advisor                     保存済みの設定で起動
+advisor --select-model      使うAIを選ぶ(番号入りメニュー)
+advisor --select-model 3    番号を付ければ即決定(この例なら3番)
+advisor --list-models       使えるAIの一覧
+advisor -m <ID>             今回だけ別のAIで起動
+advisor --list-history      保存済みの会話を一覧表示 (パスフレーズが必要)
+advisor --resume            保存済みの会話を選んで続きから再開
+advisor --no-history        今回は会話を保存しない (パスフレーズも尋ねない)
 advisor --change-passphrase 履歴パスフレーズを変更
-advisor --set-recovery     合言葉 (パスフレーズを忘れたとき用) を設定
+advisor --set-recovery      合言葉 (パスフレーズを忘れたとき用) を設定
+advisor -h, --help          ヘルプ / advisor --version  バージョン
 ```
 
 会話中に `/claude` / `/gemini` でAIを切り替え、`exit` または Ctrl-D で終了します。
 
-`--select-model` で選んだモデルは `~/.claude-agent-env` に `CLAUDE_MODEL` として保存され、
-以降 `advisor` を引数なしで起動したときの既定値になります(選んだモデル名が今のプロバイダと
-食い違うときは無視され、そのプロバイダの既定モデルが使われます)。
+`--select-model` は `~/.claude-agent-env` の `CLAUDE_MODEL` と `CLAUDE_PROVIDER` を
+**セットで**書き換えます(Geminiのモデルを選べばプロバイダもGeminiになる)。選んだAIの
+キーが未登録なら、その場で `/claude`・`/gemini` から登録する案内が出ます。
+`-m <ID>` も同様に、`gemini…` / `claude…` の名前からプロバイダを自動で合わせます。
 
 新しいターミナルでは `advisor ` と打ってTabキーを押すとオプション名が、
 `advisor -m ` の後でTabを押すと選択可能なモデルIDが補完されます

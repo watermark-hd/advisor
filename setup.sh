@@ -173,9 +173,9 @@ show_help() {
 
   -h, --help              このヘルプを表示
       --version           バージョンを表示
-  -m, --model <ID>        このセッションだけモデルを指定して起動
-      --select-model      モデルを選ぶメニューを表示し、既定として保存
-      --list-models       選択可能なモデルの一覧を表示
+      --select-model [番号] 使うAIを選ぶ。番号を付ければ即決定 (例: advisor --select-model 3)
+      --list-models       使えるAIの一覧を表示
+  -m, --model <ID>        今回だけ別のAIで起動
       --list-history      保存済みの会話を一覧表示 (パスフレーズが必要)
       --resume            保存済みの会話を選んで続きから再開
       --no-history        今回は会話を保存しない (パスフレーズも尋ねない)
@@ -183,8 +183,8 @@ show_help() {
       --set-recovery      合言葉 (パスフレーズを忘れたとき用の秘密の質問) を設定
 
 引数なしで実行すると、保存済みの設定で起動します。
-使うAI(anthropic/gemini)は setup.sh で選択。会話中に /claude・/gemini で
-切り替えられます。会話は既定で ~/.claude-agent/history に暗号化保存されます
+使うAIは --select-model で選べます(会話中は /claude・/gemini でも切替可)。
+会話は既定で ~/.claude-agent/history に暗号化保存されます
 (初回起動時にパスフレーズを設定。合言葉も任意で設定できます)。
 EOF
 }
@@ -193,29 +193,49 @@ list_models() {
   awk -F'|' '{printf "  %-32s %s\n", \$1, \$2}' "\$MODELS_FILE"
 }
 
+# id が gemini... なら gemini、それ以外は anthropic
+provider_of() {
+  case "\$1" in gemini*) echo gemini ;; *) echo anthropic ;; esac
+}
+
+# 使うAIを選ぶ。引数に番号があれば非対話。CLAUDE_MODEL と CLAUDE_PROVIDER を
+# セットで書き換えるので「Geminiのモデルを選んだのに中身はClaudeのまま」が起きない。
 select_model() {
-  echo "モデルを選んでください:"
+  local want="\$1"
   local i=1
   local ids=()
+  echo "使うAIを選んでください:"
   while IFS='|' read -r id desc; do
-    printf "  %d) %-28s %s\n" "\$i" "\$id" "\$desc"
-    ids+=("\$id")
+    printf "  %d) %s\n" "\$i" "\$desc"
+    ids[\$i]="\$id"
     i=\$((i+1))
   done < "\$MODELS_FILE"
-  printf "番号を入力 [1]: "
-  read -r choice
+  local choice="\$want"
+  if [ -z "\$choice" ]; then
+    printf "番号を入力 [1]: "
+    read -r choice
+  fi
   choice=\${choice:-1}
-  local chosen="\${ids[\$((choice-1))]}"
+  local chosen="\${ids[\$choice]}"
   if [ -z "\$chosen" ]; then
     echo "無効な選択です。"
     exit 1
   fi
-  grep -v '^export CLAUDE_MODEL=' "\$ENV_FILE" > "\$ENV_FILE.tmp" 2>/dev/null || true
+  local prov
+  prov="\$(provider_of "\$chosen")"
+  grep -v -e '^export CLAUDE_MODEL=' -e '^export CLAUDE_PROVIDER=' "\$ENV_FILE" > "\$ENV_FILE.tmp" 2>/dev/null || true
   mv "\$ENV_FILE.tmp" "\$ENV_FILE"
   echo "export CLAUDE_MODEL=\$chosen" >> "\$ENV_FILE"
+  echo "export CLAUDE_PROVIDER=\$prov" >> "\$ENV_FILE"
   chmod 600 "\$ENV_FILE"
-  echo "既定モデルを \$chosen に設定しました。"
-  export CLAUDE_MODEL="\$chosen"
+  echo "→ \$chosen を使います。"
+  local keyvar=ANTHROPIC_API_KEY
+  [ "\$prov" = gemini ] && keyvar=GEMINI_API_KEY
+  if ! grep -q "^export \$keyvar=" "\$ENV_FILE"; then
+    local slash=claude
+    [ "\$prov" = gemini ] && slash=gemini
+    echo "※ このAIのキーがまだありません。'advisor' を起動して /\$slash と打つと登録できます。"
+  fi
 }
 
 PERL_ARGS=()
@@ -224,7 +244,15 @@ while [ \$# -gt 0 ]; do
     -h|--help) show_help; exit 0 ;;
     --version) echo "advisor (high_sierra_claude) 0.1"; exit 0 ;;
     --list-models) list_models; exit 0 ;;
-    --select-model) select_model; shift ;;
+    --select-model)
+      # 設定だけして終了する(起動は次に 'advisor' と打てばよい)
+      if [ -n "\$2" ] && [ "\$2" -eq "\$2" ] 2>/dev/null; then
+        select_model "\$2"
+      else
+        select_model
+      fi
+      exit 0
+      ;;
     --list-history) PERL_ARGS[\${#PERL_ARGS[@]}]="--list-history"; shift ;;
     --resume) PERL_ARGS[\${#PERL_ARGS[@]}]="--resume"; shift ;;
     --change-passphrase) PERL_ARGS[\${#PERL_ARGS[@]}]="--change-passphrase"; shift ;;
@@ -232,6 +260,10 @@ while [ \$# -gt 0 ]; do
     --no-history) export CLAUDE_NO_HISTORY=1; shift ;;
     -m|--model)
       export CLAUDE_MODEL="\$2"
+      case "\$2" in
+        gemini*) export CLAUDE_PROVIDER=gemini ;;
+        claude*) export CLAUDE_PROVIDER=anthropic ;;
+      esac
       shift 2
       ;;
     *)
