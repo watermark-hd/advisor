@@ -383,9 +383,14 @@ sub unlock_history {
     }
 
     if (-f $HISTORY_CHECK) {
-        for my $try (1 .. 3) {
-            my $pass = read_secret("履歴パスフレーズ: ");
-            return 0 unless defined $pass && $pass ne '';
+        # 回数制限は設けない。何度でも打ち直せる。履歴なしで進めたいときは
+        # 何も入力せずEnter(または Ctrl-C / Ctrl-D)で抜けられる。
+        while (1) {
+            my $pass = read_secret("履歴パスフレーズ (空Enterで履歴なしのまま起動): ");
+            unless (defined $pass && $pass ne '') {
+                print "今回は履歴を保存せずに起動します。\n";
+                return 0;
+            }
             $ENV{CLAUDE_HIST_PASS} = $pass;
             my $got = hist_decrypt($HISTORY_CHECK);
             if (defined $got) {
@@ -393,11 +398,8 @@ sub unlock_history {
                 return 1 if $got eq $HISTORY_TOKEN;
             }
             delete $ENV{CLAUDE_HIST_PASS};
-            print "パスフレーズが違います。\n" if $try < 3;
+            print "パスフレーズが違います。もう一度どうぞ。\n";
         }
-        print "パスフレーズを確認できませんでした。\n";
-        print "履歴なしで起動するには CLAUDE_NO_HISTORY=1 を設定してください。\n";
-        return 0;
     }
 
     # 初回設定
