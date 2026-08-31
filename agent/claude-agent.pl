@@ -37,6 +37,9 @@ $| = 1;
 # モデル切り替えは ~/bin/claude (シェルラッパー) 側の -m/--select-model で
 # 行い、ここではCLAUDE_MODEL環境変数を読むだけにして本体は単純に保つ。
 # ------------------------------------------------------------------
+my $LIST_HISTORY = 0;   # --list-history: 保存済みの会話を一覧表示して終了
+my $RESUME       = 0;   # --resume: 保存済みの会話を選んで続きから再開
+
 for my $arg (@ARGV) {
     if ($arg eq '--help' || $arg eq '-h') {
         print_help();
@@ -46,20 +49,26 @@ for my $arg (@ARGV) {
         print "claude-agent.pl (high_sierra_claude) 0.1\n";
         exit 0;
     }
+    if ($arg eq '--list-history') { $LIST_HISTORY = 1; }
+    if ($arg eq '--resume')       { $RESUME = 1; }
 }
 
 sub print_help {
     print <<'EOH';
 使い方: claude-agent.pl [オプション]
 
-  -h, --help    このヘルプを表示
-      --version バージョンを表示
+  -h, --help        このヘルプを表示
+      --version     バージョンを表示
+      --list-history 保存済みの会話を一覧表示して終了
+      --resume      保存済みの会話を選んで続きから再開
 
 環境変数:
   ANTHROPIC_API_KEY  (必須) Anthropic APIキー
   CLAUDE_MODEL        使用するモデル (既定: claude-sonnet-5)
   CLAUDE_CURL         curlコマンドのパス (既定: curl。PATH上のものを使用)
   CLAUDE_CACERT       CA証明書ファイル (既定: 未指定。システムcurlの信頼ストアを使用)
+  CLAUDE_NO_HISTORY  1にすると会話を保存しない(パスフレーズも尋ねない)
+  CLAUDE_OPENSSL     opensslコマンドのパス (既定: openssl)
 
 モデルの切り替えや対話メニューは `claude --select-model` / `claude -m <ID>`
 (シェルラッパー側)から行える。
@@ -76,6 +85,15 @@ my $MODEL     = $ENV{CLAUDE_MODEL} || 'claude-sonnet-5';
 my $MAX_TOKENS = 4096;
 my $API_URL   = 'https://api.anthropic.com/v1/messages';
 my $ANTHROPIC_VERSION = '2023-06-01';
+
+# --- 会話履歴(パスフレーズで暗号化してローカル保存) ---
+my $HISTORY_ENABLED = $ENV{CLAUDE_NO_HISTORY} ? 0 : 1;
+my $HISTORY_DIR     = "$ENV{HOME}/.claude-agent/history";
+my $HISTORY_CHECK   = "$HISTORY_DIR/.check";     # パスフレーズ照合用
+my $HISTORY_TOKEN   = 'high_sierra_claude';      # .check に暗号化して入れる既知の文字列
+my $OPENSSL         = $ENV{CLAUDE_OPENSSL} || 'openssl';
+my $STARTED         = _timestamp();
+my $SESSION_FILE;                                # この会話の保存先(unlock後に決定)
 
 my $SYSTEM_PROMPT = <<'EOS';
 You are a lightweight coding assistant running in the terminal of an
@@ -277,6 +295,163 @@ sub quote {
     my ($s) = @_;
     $s =~ s/'/'\\''/g;
     return "'$s'";
+}
+
+# ------------------------------------------------------------------
+# 会話履歴の暗号化保存
+#
+# High Sierra 標準の Perl には暗号機能がなく、CPAN依存も入れたくないので
+# openssl コマンドにシェルアウトしてAES-256-CBCで暗号化する。パスフレーズは
+# 環境変数 CLAUDE_HIST_PASS 経由で渡し、ps出力やargv、ディスクには出さない。
+# High Sierra の LibreSSL は -pbkdf2 非対応のため鍵導出はやや弱め(MD5ベース)
+# だが、平文でそのまま置くよりははるかにマシ、という位置づけ。-md md5 を
+# 明示して、新しめのOpenSSLとの間でも同じ鍵導出になるようにしている。
+# ------------------------------------------------------------------
+sub _timestamp {
+    my @t = localtime();
+    return sprintf('%04d%02d%02d-%02d%02d%02d',
+        $t[5] + 1900, $t[4] + 1, $t[3], $t[2], $t[1], $t[0]);
+}
+
+# 一時ファイルを 0600 で作って書き込む(平文がディスクに出るのはここだけ、
+# 直後に必ず unlink する)
+sub _write_private {
+    my ($path, $data) = @_;
+    open(my $fh, '>:encoding(UTF-8)', $path) or die "一時ファイルを作成できません: $!\n";
+    chmod 0600, $path;
+    print $fh $data;
+    close $fh;
+}
+
+# openssl のstderr(新しめのOpenSSLが出す "deprecated key derivation" 警告や
+# パスフレーズ違いの "bad decrypt" など。いずれもこちらで戻り値を見て処理する)
+# を飲み込んで実行する
+sub _run_quiet {
+    my @cmd = @_;
+    open(my $olderr, '>&', \*STDERR) or return system(@cmd);
+    open(STDERR, '>', '/dev/null') or do { return system(@cmd) };
+    my $rc = system(@cmd);
+    open(STDERR, '>&', $olderr);
+    return $rc;
+}
+
+sub hist_encrypt {
+    my ($plaintext, $out_path) = @_;
+    my $tmp = "/tmp/claude-hist-$$-" . int(rand(1_000_000_000));
+    _write_private($tmp, $plaintext);
+    my $rc = _run_quiet($OPENSSL, 'enc', '-aes-256-cbc', '-md', 'md5', '-salt',
+                    '-pass', 'env:CLAUDE_HIST_PASS',
+                    '-in', $tmp, '-out', $out_path);
+    unlink $tmp;
+    return $rc == 0;
+}
+
+sub hist_decrypt {
+    my ($in_path) = @_;
+    my $tmp = "/tmp/claude-hist-$$-" . int(rand(1_000_000_000));
+    my $rc = _run_quiet($OPENSSL, 'enc', '-d', '-aes-256-cbc', '-md', 'md5',
+                    '-pass', 'env:CLAUDE_HIST_PASS',
+                    '-in', $in_path, '-out', $tmp);
+    if ($rc != 0) { unlink $tmp; return undef; }
+    open(my $fh, '<:encoding(UTF-8)', $tmp) or do { unlink $tmp; return undef; };
+    local $/;
+    my $data = <$fh>;
+    close $fh;
+    unlink $tmp;
+    return $data;
+}
+
+# パスフレーズを画面に表示せずに1行読む
+sub read_secret {
+    my ($prompt) = @_;
+    print $prompt;
+    system('stty', '-echo');
+    my $line = <STDIN>;
+    system('stty', 'echo');
+    print "\n";
+    return undef unless defined $line;
+    chomp $line;
+    return decode('UTF-8', $line, FB_DEFAULT);
+}
+
+# 履歴用パスフレーズを用意する。初回は新規設定(2回入力して .check を作成)、
+# 2回目以降は .check を復号して照合する。成功したら $ENV{CLAUDE_HIST_PASS}
+# をセットして 1 を返す。失敗/中止なら 0(履歴なしで続行)。
+sub unlock_history {
+    for my $d ("$ENV{HOME}/.claude-agent", $HISTORY_DIR) {
+        mkdir($d, 0700) unless -d $d;
+    }
+
+    if (-f $HISTORY_CHECK) {
+        for my $try (1 .. 3) {
+            my $pass = read_secret("履歴パスフレーズ: ");
+            return 0 unless defined $pass && $pass ne '';
+            $ENV{CLAUDE_HIST_PASS} = $pass;
+            my $got = hist_decrypt($HISTORY_CHECK);
+            if (defined $got) {
+                chomp $got;
+                return 1 if $got eq $HISTORY_TOKEN;
+            }
+            delete $ENV{CLAUDE_HIST_PASS};
+            print "パスフレーズが違います。\n" if $try < 3;
+        }
+        print "パスフレーズを確認できませんでした。\n";
+        print "履歴なしで起動するには CLAUDE_NO_HISTORY=1 を設定してください。\n";
+        return 0;
+    }
+
+    # 初回設定
+    print "会話履歴を暗号化して $HISTORY_DIR に保存します。\n";
+    print "パスフレーズを決めてください(忘れると履歴は復号できなくなります)。\n";
+    my $p1 = read_secret("新しいパスフレーズ: ");
+    my $p2 = read_secret("もう一度入力: ");
+    unless (defined $p1 && $p1 ne '' && defined $p2 && $p1 eq $p2) {
+        print "一致しませんでした。今回は履歴を保存せずに続けます。\n";
+        return 0;
+    }
+    $ENV{CLAUDE_HIST_PASS} = $p1;
+    unless (hist_encrypt($HISTORY_TOKEN . "\n", $HISTORY_CHECK)) {
+        print "パスフレーズの保存に失敗しました。今回は履歴を保存せずに続けます。\n";
+        delete $ENV{CLAUDE_HIST_PASS};
+        return 0;
+    }
+    chmod 0600, $HISTORY_CHECK;
+    print "設定しました。\n";
+    return 1;
+}
+
+# 現在の会話を暗号化して $SESSION_FILE に保存する
+sub save_history {
+    my ($messages_ref) = @_;
+    return unless $SESSION_FILE;
+    my $json = MiniJSON::encode({
+        model    => $MODEL,
+        started  => $STARTED,
+        messages => $messages_ref,
+    });
+    hist_encrypt($json, $SESSION_FILE);
+    chmod 0600, $SESSION_FILE;
+}
+
+# 保存済みの会話ファイル(新しい順。ファイル名先頭がタイムスタンプ)
+sub history_files {
+    opendir(my $dh, $HISTORY_DIR) or return ();
+    my @f = grep { /\.json\.enc$/ } readdir($dh);
+    closedir $dh;
+    return sort { $b cmp $a } @f;
+}
+
+# 会話データから最初のユーザー発言を1行取り出す(一覧表示用)
+sub first_user_line {
+    my ($data) = @_;
+    for my $m (@{ $data->{messages} || [] }) {
+        next unless $m->{role} && $m->{role} eq 'user';
+        my $c = $m->{content};
+        next if ref $c;   # tool_result などの構造化contentはスキップ
+        $c =~ s/\s+/ /g;
+        return length($c) > 60 ? substr($c, 0, 60) . '…' : $c;
+    }
+    return '(発言なし)';
 }
 
 # ------------------------------------------------------------------
@@ -660,8 +835,63 @@ sub run_tool {
 # ------------------------------------------------------------------
 my @messages;
 
+# --- 履歴: ロック解除 / 一覧表示 / 再開 ---
+if ($HISTORY_ENABLED) {
+    $HISTORY_ENABLED = unlock_history();
+}
+
+if ($LIST_HISTORY) {
+    unless ($HISTORY_ENABLED) { print "履歴は利用できません。\n"; exit 1; }
+    my @files = history_files();
+    unless (@files) { print "保存済みの会話はありません。\n"; exit 0; }
+    my $i = 1;
+    for my $f (@files) {
+        my $raw = hist_decrypt("$HISTORY_DIR/$f");
+        my $line = '(復号できません)';
+        if (defined $raw) {
+            my $d = eval { MiniJSON::decode($raw) };
+            $line = $d ? (($d->{started} || $f) . '  ' . first_user_line($d)) : '(壊れています)';
+        }
+        printf "  %2d) %s\n", $i++, $line;
+    }
+    exit 0;
+}
+
+if ($RESUME) {
+    unless ($HISTORY_ENABLED) { print "履歴は利用できません。\n"; exit 1; }
+    my @files = history_files();
+    unless (@files) { print "再開できる会話はありません。\n"; exit 0; }
+    my @decoded;
+    my $i = 1;
+    for my $f (@files) {
+        my $raw = hist_decrypt("$HISTORY_DIR/$f");
+        my $d = defined($raw) ? eval { MiniJSON::decode($raw) } : undef;
+        push @decoded, { file => $f, data => $d };
+        printf "  %2d) %s\n", $i++,
+            $d ? (($d->{started} || $f) . '  ' . first_user_line($d)) : "$f (読めません)";
+    }
+    print "再開する番号を入力 [1]: ";
+    my $sel = <STDIN>;
+    $sel = defined($sel) ? $sel + 0 : 1;
+    $sel = 1 if $sel < 1 || $sel > scalar(@decoded);
+    my $chosen = $decoded[$sel - 1];
+    if ($chosen->{data} && $chosen->{data}{messages}) {
+        @messages = @{ $chosen->{data}{messages} };
+        $SESSION_FILE = "$HISTORY_DIR/" . $chosen->{file};   # 同じファイルに続けて保存
+        print "会話を再開します(" . scalar(@messages) . "メッセージ)。\n";
+    } else {
+        print "その会話は読み込めませんでした。新しい会話を始めます。\n";
+    }
+}
+
+# 新規会話のときの保存先
+if ($HISTORY_ENABLED && !$SESSION_FILE) {
+    $SESSION_FILE = "$HISTORY_DIR/$STARTED.json.enc";
+}
+
 print "=== Claude Agent (high_sierra_claude) ===\n";
 print "モデル: $MODEL\n";
+print $HISTORY_ENABLED ? "履歴: 暗号化して保存します\n" : "履歴: 保存しません\n";
 print "こんにちは。(終了は 'exit' または Ctrl-D)\n";
 
 while (1) {
@@ -715,6 +945,8 @@ while (1) {
 
         last; # tool_useが無ければこのターンは終了
     }
+
+    save_history(\@messages) if $HISTORY_ENABLED;
 }
 
 print "\nさようなら。\n";

@@ -42,6 +42,9 @@ claude --version          バージョンを表示
 claude -m <ID>            このセッションだけモデルを指定して起動
 claude --select-model     モデルを選ぶメニューを表示し、既定として保存
 claude --list-models      選択可能なモデルの一覧を表示
+claude --list-history     保存済みの会話を一覧表示 (パスフレーズが必要)
+claude --resume           保存済みの会話を選んで続きから再開
+claude --no-history       今回は会話を保存しない (パスフレーズも尋ねない)
 ```
 
 `--select-model` で選んだモデルは `~/.claude-agent-env` に `CLAUDE_MODEL` として保存され、
@@ -51,12 +54,31 @@ claude --list-models      選択可能なモデルの一覧を表示
 `claude -m ` の後でTabを押すと選択可能なモデルIDが補完されます
 (`completion/claude-completion.bash`、High Sierra標準のbash 3.2で動作確認)。
 
+## 会話履歴 (暗号化してローカル保存)
+
+会話は既定で `~/.claude-agent/history/<日時>.json.enc` に暗号化して保存されます。
+家族と1台のMacを共有していても、パスフレーズを知らない人には読めません。
+
+- 初回起動時にパスフレーズを設定します(2回入力)。以降は起動のたびに1回だけ聞かれます
+  (画面には表示されません)。**忘れると履歴は復号できなくなります。**
+- 暗号化は `openssl enc -aes-256-cbc` にシェルアウトして行います(High Sierra標準の
+  LibreSSLで動作)。パスフレーズは環境変数経由でopensslに渡し、`ps` 出力やコマンドライン、
+  ディスクには出しません。
+- High SierraのLibreSSLは `-pbkdf2` 非対応のため鍵導出はMD5ベースとやや弱めですが、
+  平文でそのまま置くよりははるかに安全、という位置づけです。
+- `claude --resume` で前回の続きから、`claude --list-history` で一覧を確認できます。
+- `claude --no-history`(または環境変数 `CLAUDE_NO_HISTORY=1`)で保存を無効化。
+  このときパスフレーズは尋ねられません。
+- パスフレーズを変えたい/忘れた場合は `~/.claude-agent/history/.check` を削除して
+  再設定します(既存の履歴は読めなくなります)。
+
 ## エージェントについて (`agent/claude-agent.pl`)
 
 - 単一ファイル、外部CPANモジュール依存ゼロ
 - JSON encode/decodeは自前実装(再帰下降パーサー)
 - 4つのツール: `read_file` / `write_file` / `list_dir` / `run_shell`(書き込み・実行は確認プロンプトあり)
 - HTTP通信はcurlをサブプロセスとして呼び出す方式(TLSをPerl側に持たせない)
+- 会話履歴は `openssl` にシェルアウトして暗号化保存(上記参照)
 - `CLAUDE_CURL` / `CLAUDE_CACERT` 環境変数で、Tier A向けの自前ビルドtoolchainに差し替え可能
   (`setup.sh` は `~/claude-toolchain` があれば自動的にそちらを優先する)
 

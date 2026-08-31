@@ -130,8 +130,13 @@ show_help() {
   -m, --model <ID>        このセッションだけモデルを指定して起動
       --select-model      モデルを選ぶメニューを表示し、既定として保存
       --list-models       選択可能なモデルの一覧を表示
+      --list-history      保存済みの会話を一覧表示 (パスフレーズが必要)
+      --resume            保存済みの会話を選んで続きから再開
+      --no-history        今回は会話を保存しない (パスフレーズも尋ねない)
 
 引数なしで実行すると、保存済みの設定でエージェントを起動します。
+会話は既定で ~/.claude-agent/history に暗号化して保存されます
+(初回起動時にパスフレーズを設定)。
 EOF
 }
 
@@ -164,12 +169,16 @@ select_model() {
   export CLAUDE_MODEL="\$chosen"
 }
 
+PERL_ARGS=()
 while [ \$# -gt 0 ]; do
   case "\$1" in
     -h|--help) show_help; exit 0 ;;
     --version) echo "claude (high_sierra_claude) 0.1"; exit 0 ;;
     --list-models) list_models; exit 0 ;;
     --select-model) select_model; shift ;;
+    --list-history) PERL_ARGS[\${#PERL_ARGS[@]}]="--list-history"; shift ;;
+    --resume) PERL_ARGS[\${#PERL_ARGS[@]}]="--resume"; shift ;;
+    --no-history) export CLAUDE_NO_HISTORY=1; shift ;;
     -m|--model)
       export CLAUDE_MODEL="\$2"
       shift 2
@@ -184,7 +193,11 @@ done
 
 export CLAUDE_CURL="\$CURL_BIN"
 [ -n "\$CACERT" ] && export CLAUDE_CACERT="\$CACERT"
-exec perl "\$AGENT_SCRIPT"
+if [ \${#PERL_ARGS[@]} -gt 0 ]; then
+  exec perl "\$AGENT_SCRIPT" "\${PERL_ARGS[@]}"
+else
+  exec perl "\$AGENT_SCRIPT"
+fi
 WRAPEOF
 chmod +x "$BIN_DIR/claude"
 echo "$BIN_DIR/claude を作成しました。"
