@@ -120,7 +120,7 @@ class AdvisorGUI:
         # 入力欄
         self.inbar = tk.Frame(self.root)
         self.inbar.pack(fill=tk.X)
-        self.entry = tk.Text(self.inbar, height=3, wrap=tk.WORD,
+        self.entry = tk.Text(self.inbar, height=4, wrap=tk.WORD,
                              relief=tk.FLAT, highlightthickness=1, padx=8, pady=6)
         self.entry.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(8, 4), pady=6)
         self.entry.bind("<Return>", self._on_return)
@@ -149,16 +149,23 @@ class AdvisorGUI:
                           insertbackground=t["input_fg"],
                           highlightbackground=t["bar_bg"],
                           highlightcolor=t["dim"])
-        # タグ: 自分は左端、相手は2文字ぶん字下げ。名前ラベルは付けない。
-        indent = f[1] * 2 + 8  # おおよそ全角2文字ぶん
-        self.note.tag_config("you", foreground=t["fg"],
-                             lmargin1=6, lmargin2=6, spacing1=10, spacing3=2)
+        # LINE と同じ向き: 相手(AI)は左、自分は右寄せ。名前ラベルは付けない。
+        # 全角4文字ぶんくらいのぶら下げ/余白で分ける。行間は詰めて、区切りは
+        # 薄いヨコ線に任せる(行間で分けると、どちらの発言か分かりにくい)。
+        pad4 = f[1] * 4
         self.note.tag_config("ai", foreground=t["ai"],
-                             lmargin1=indent, lmargin2=indent, spacing1=10, spacing3=2)
-        self.note.tag_config("dim", foreground=t["dim"], lmargin1=indent,
-                             lmargin2=indent, spacing1=6, font=(f[0], f[1] - 2))
-        self.note.tag_config("err", foreground=t["err"], lmargin1=indent,
-                             lmargin2=indent, spacing1=6)
+                             lmargin1=6, lmargin2=6, rmargin=pad4,
+                             spacing1=2, spacing3=2)
+        self.note.tag_config("you", foreground=t["fg"], justify=tk.RIGHT,
+                             lmargin1=pad4, lmargin2=pad4, rmargin=8,
+                             spacing1=2, spacing3=2)
+        self.note.tag_config("dim", foreground=t["dim"],
+                             lmargin1=6, lmargin2=6, spacing1=2,
+                             font=(f[0], f[1] - 2))
+        self.note.tag_config("err", foreground=t["err"],
+                             lmargin1=6, lmargin2=6, spacing1=2)
+        self.note.tag_config("rule", foreground=t["dim"], justify=tk.CENTER,
+                             font=(f[0], max(8, f[1] - 3)), spacing1=6, spacing3=6)
         self.theme_btn.config(text="見た目: " + t["label"])
 
     def _toggle_theme(self):
@@ -170,7 +177,8 @@ class AdvisorGUI:
     def _append(self, text, tag):
         self.note.config(state=tk.NORMAL)
         if self.note.index("end-1c") != "1.0":
-            self.note.insert(tk.END, "\n")
+            # 発言のあいだに、中央に短い薄線の区切り(原稿の場面転換ふう)。
+            self.note.insert(tk.END, "\n" + "─" * 16 + "\n", "rule")
         self.note.insert(tk.END, text.rstrip("\n"), tag)
         self.note.insert(tk.END, "\n")
         self.note.see(tk.END)
