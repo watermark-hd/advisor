@@ -150,7 +150,8 @@ upsert_env "CLAUDE_PROVIDER" "$PROVIDER"
 mkdir -p "$BUILD_DIR"
 cp "$SCRIPT_DIR/agent/claude-agent.pl" "$BUILD_DIR/claude-agent.pl"
 cp "$SCRIPT_DIR/models.txt" "$BUILD_DIR/models.txt"
-echo "$BUILD_DIR に claude-agent.pl / models.txt を配置しました。"
+[ -f "$SCRIPT_DIR/gui/advisor_gui.py" ] && cp "$SCRIPT_DIR/gui/advisor_gui.py" "$BUILD_DIR/advisor_gui.py"
+echo "$BUILD_DIR に claude-agent.pl / models.txt / advisor_gui.py を配置しました。"
 
 # --- 4. advisor コマンド(ラッパー)の設置 ---
 mkdir -p "$BIN_DIR"
@@ -164,6 +165,15 @@ MODELS_FILE="$BUILD_DIR/models.txt"
 AGENT_SCRIPT="$BUILD_DIR/claude-agent.pl"
 CURL_BIN="$CURL_BIN"
 CACERT="$CACERT"
+
+# 端末の文字コードを UTF-8 に固定する。これが C ロケール等になっていると、
+# 素の行入力(canonical mode)で日本語1文字(3バイト)をtty側が1バイト単位で
+# 扱ってしまい、Backspace でカーソルと文字の位置がずれる・数文字先を消す、
+# という現象になる。Terminal の設定に依存せず必ず UTF-8 にする。
+if [ -z "\$LANG" ] || [ "\${LANG#*.}" = "\$LANG" ]; then
+  export LANG="ja_JP.UTF-8"
+fi
+export LC_CTYPE="\${LC_CTYPE:-\$LANG}"
 
 source "\$ENV_FILE"
 
@@ -263,6 +273,8 @@ while [ \$# -gt 0 ]; do
     [0-9]|[0-9][0-9])
       # 「advisor 3」= 3番のAIにして起動
       select_model "\$norm"; shift ;;
+    gui|window|app)
+      PERL_ARGS[\${#PERL_ARGS[@]}]="--gui"; shift ;;
     list-history|listhistory|history|log)
       PERL_ARGS[\${#PERL_ARGS[@]}]="--list-history"; shift ;;
     resume|continue|cont)

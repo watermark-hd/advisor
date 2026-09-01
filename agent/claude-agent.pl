@@ -92,6 +92,8 @@ my $LIST_HISTORY   = 0;   # --list-history: 保存済みの会話を一覧表示
 my $RESUME         = 0;   # --resume: 保存済みの会話を選んで続きから再開
 my $CHANGE_PASS    = 0;   # --change-passphrase: 履歴パスフレーズを変更して終了
 my $SET_RECOVERY   = 0;   # --set-recovery: 合言葉(復旧用の秘密の質問)を設定して終了
+my $GUI            = 0;   # --gui: 端末用の表示をやめ、1行1件のJSONで入出力する
+                          #        (Python/tkinter のGUIから裏で駆動するため)
 
 for my $arg (@ARGV) {
     if ($arg eq '--help' || $arg eq '-h') {
@@ -106,6 +108,7 @@ for my $arg (@ARGV) {
     if ($arg eq '--resume')            { $RESUME = 1; }
     if ($arg eq '--change-passphrase') { $CHANGE_PASS = 1; }
     if ($arg eq '--set-recovery')      { $SET_RECOVERY = 1; }
+    if ($arg eq '--gui')               { $GUI = 1; }
 }
 
 sub print_help {
@@ -218,6 +221,14 @@ sub switch_provider {
     return 1 unless $@;   # キーが揃っていてそのまま切り替えOK
 
     my $key_name = $target eq 'gemini' ? 'GEMINI_API_KEY' : 'ANTHROPIC_API_KEY';
+
+    # GUI モードでは、その場でのキー入力はまだ用意していない。
+    # setup.sh で登録してもらう。
+    if ($GUI) {
+        emit_error("$key_name が未登録です。setup.sh でそのAIのキーを登録してください。");
+        return 0;
+    }
+
     my $key = read_secret("\n$key_name が未設定です。貼り付けてEnter(空Enterでキャンセル): ");
     if (!defined $key || $key eq '') {
         print "キャンセルしました。[$PROVIDER / $MODEL] のままです。\n";
@@ -276,10 +287,56 @@ sub switch_to_model {
 
     persist_env('CLAUDE_MODEL', $MODEL);
     persist_env('CLAUDE_PROVIDER', $PROVIDER);
-    print "\n→ [$PROVIDER / $MODEL] にしました。\n";
+    emit_note("→ [$PROVIDER / $MODEL] にしました。");
+    gui_send({ t => 'model', provider => $PROVIDER, model => $MODEL }) if $GUI;
 }
 
 configure_provider($ENV{CLAUDE_PROVIDER} || 'anthropic');
+
+# ------------------------------------------------------------------
+# 出力の抽象化。端末モードでは今まで通り print、GUI モード($GUI)では
+# 1行1件の JSON を STDOUT に書く。会話ループや run_tool はどちらか
+# 意識しない。GUI 側 (Python/tkinter) がこの JSON を読んで画面を作る。
+# ------------------------------------------------------------------
+sub gui_send {
+    my ($obj) = @_;
+    print MiniJSON::encode($obj), "\n";
+}
+# GUI からの1行(JSON)を読んでデコード。EOF は undef、それ以外は必ずハッシュ参照。
+sub gui_read {
+    my $line = <STDIN>;
+    return undef unless defined $line;
+    $line =~ s/\r?\n\z//;
+    my $text = decode('UTF-8', $line, FB_DEFAULT);
+    my $obj  = eval { MiniJSON::decode($text) };
+    return (ref $obj eq 'HASH') ? $obj : {};
+}
+
+sub emit_text {
+    my ($text) = @_;
+    if ($GUI) { gui_send({ t => 'text', text => $text }); }
+    else      { print "\n$PROVIDER> $text\n"; }
+}
+sub emit_tool {
+    my ($name, $input) = @_;
+    if ($GUI) { gui_send({ t => 'tool', name => $name, input => $input }); }
+    else      { print "\n[tool_use] $name(" . MiniJSON::encode($input) . ")\n"; }
+}
+sub emit_status {
+    my ($text) = @_;
+    if ($GUI) { gui_send({ t => 'status', text => $text }); }
+    elsif ($text ne '') { print "  … $text\n"; }
+}
+sub emit_error {
+    my ($text) = @_;
+    if ($GUI) { gui_send({ t => 'error', text => $text }); }
+    else      { print "\n$text"; }
+}
+sub emit_note {   # 補助的なお知らせ(切り替え完了など)
+    my ($text) = @_;
+    if ($GUI) { gui_send({ t => 'note', text => $text }); }
+    else      { print "\n$text\n"; }
+}
 
 # --- 会話履歴(暗号化してローカル保存) ---
 # ランダムなマスター鍵で履歴ファイルを暗号化し、そのマスター鍵自体を
@@ -513,10 +570,11 @@ sub call_api {
     # 応答待ちのあいだ画面が固まって見えないよう一言出す。
     # カーソル制御のエスケープは一切使わない(古い Terminal.app が
     # 文字描画で落ちるため。消さずに1行残すだけにする)。
-    print "  … 問い合わせ中\n";
+    emit_status("問い合わせ中");
     my $http_code = `@{[quote($CURL)]} -K @{[quote($tmp_config)]}`;
     $http_code = '' unless defined $http_code;
     $http_code =~ s/\s+//g;
+    emit_status("") if $GUI;
     unlink $tmp_req, $tmp_config;
 
     # レスポンスは生バイトで読んでからまとめてデコードする。
@@ -765,6 +823,20 @@ sub hist_decrypt {
     my $secret_hint_shown = 0;
     sub read_secret {
         my ($prompt) = @_;
+
+        # GUI モード: パスフレーズ要求イベントを送り、返答を待つ。
+        if ($GUI) {
+            (my $label = $prompt) =~ s/[:：]\s*$//;
+            $label =~ s/^\s+//;
+            gui_send({ t => 'need_passphrase', prompt => $label });
+            while (1) {
+                my $r = gui_read();
+                return undef unless defined $r;
+                next unless $r->{t} && $r->{t} eq 'passphrase';
+                return defined $r->{value} ? $r->{value} : '';
+            }
+        }
+
         # 「入力しても何も出ない」を知らないと固まったように見えるので、
         # このセッションで最初のパスフレーズ入力のときだけ一言添える。
         unless ($secret_hint_shown) {
@@ -1074,6 +1146,18 @@ my @TOOLS = (
 
 sub confirm {
     my ($msg) = @_;
+
+    # GUI モード: 確認イベントを送って、返ってくる reply を待つ。
+    if ($GUI) {
+        gui_send({ t => 'confirm', prompt => $msg });
+        while (1) {
+            my $r = gui_read();
+            return 0 unless defined $r;                  # GUIが閉じた
+            next unless $r->{t} && $r->{t} eq 'reply';
+            return ($r->{value} && $r->{value} =~ /^(y|yes|1|true)$/i) ? 1 : 0;
+        }
+    }
+
     print "\n";
     print "──────── 確認 ────────\n";
     print "AIが次のことをしようとしています:\n";
@@ -1519,6 +1603,40 @@ if ($HISTORY_ENABLED && !$SESSION_FILE) {
     $SESSION_FILE = "$HISTORY_DIR/$STARTED.json.enc";
 }
 
+# --- GUI モード: JSON でやり取りするループ(Python/tkinter から駆動) ---
+if ($GUI) {
+    gui_send({
+        t         => 'ready',
+        provider  => $PROVIDER,
+        model     => $MODEL,
+        history   => $HISTORY_ENABLED ? 1 : 0,
+        models    => [ map { { id => $_->[0], label => $_->[1] } } @MODEL_CHOICES ],
+        messages  => scalar(@messages),
+    });
+    while (1) {
+        my $req = gui_read();
+        last unless defined $req;                       # GUI が閉じた = EOF
+        my $type = $req->{t} || '';
+        last if $type eq 'quit';
+        next unless $type eq 'user';
+        my $text = defined $req->{text} ? $req->{text} : '';
+        next if $text eq '';
+
+        my $r = eval { handle_turn($text) };
+        if ($@) {
+            dbg("turn error(gui): $@");
+            emit_error("うまく処理できませんでした(続けられます)。");
+            pop @messages if @messages
+                && ($messages[-1]{role} eq 'assistant' || ref $messages[-1]{content});
+        }
+        eval { save_history(\@messages) if $HISTORY_ENABLED };
+        gui_send({ t => 'turn_done' });
+        last if defined $r && $r eq 'quit';
+    }
+    gui_send({ t => 'bye' });
+    exit 0;
+}
+
 print "=== high_sierra Advisor ===\n";
 print $HISTORY_ENABLED ? "履歴: 暗号化して保存します\n" : "履歴: 保存しません\n";
 if (@MODEL_CHOICES) {
@@ -1536,9 +1654,9 @@ sub handle_turn {
 
     return 'quit' if $input eq 'exit';
 
-    # 一覧を出す
+    # 一覧を出す(端末のみ。GUIは起動時に一覧を受け取っている)
     if ($input eq '/model' || $input eq '/models' || $input eq '/m' || $input eq '?') {
-        show_model_menu();
+        show_model_menu() unless $GUI;
         return;
     }
 
@@ -1548,7 +1666,7 @@ sub handle_turn {
         if ($n >= 1 && $n <= @MODEL_CHOICES) {
             my $id = $MODEL_CHOICES[$n - 1][0];
             ($id eq $MODEL)
-                ? print "\nすでに [$PROVIDER / $MODEL] です。\n"
+                ? emit_note("すでに [$PROVIDER / $MODEL] です。")
                 : switch_to_model($id);
             return;
         }
@@ -1561,7 +1679,7 @@ sub handle_turn {
         my $id = ($arg =~ /^\d+$/ && @MODEL_CHOICES && $arg >= 1 && $arg <= @MODEL_CHOICES)
             ? $MODEL_CHOICES[$arg - 1][0] : $arg;
         ($id eq $MODEL)
-            ? print "\nすでに [$PROVIDER / $MODEL] です。\n"
+            ? emit_note("すでに [$PROVIDER / $MODEL] です。")
             : switch_to_model($id);
         return;
     }
@@ -1570,12 +1688,13 @@ sub handle_turn {
     if ($input eq '/claude' || $input eq '/gemini') {
         my $target = $input eq '/claude' ? 'anthropic' : 'gemini';
         if ($target eq $PROVIDER) {
-            print "\nすでに [$PROVIDER / $MODEL] です。\n";
+            emit_note("すでに [$PROVIDER / $MODEL] です。");
         }
         elsif (switch_provider($target)) {
             persist_env('CLAUDE_PROVIDER', $PROVIDER);
             persist_env('CLAUDE_MODEL', $MODEL);
-            print "\n→ [$PROVIDER / $MODEL] にしました。会話はそのまま引き継がれます。\n";
+            emit_note("→ [$PROVIDER / $MODEL] にしました。会話はそのまま引き継がれます。");
+            gui_send({ t => 'model', provider => $PROVIDER, model => $MODEL }) if $GUI;
         }
         return;
     }
@@ -1590,14 +1709,14 @@ sub handle_turn {
         if ($@) {
             # 通信エラーなど。素のユーザー発言のターンなら取り消して戻る
             # (ツール応答の途中なら履歴を壊さないよう残す)。
-            print "\n$@";
+            emit_error($@);
             pop @messages if @messages && !ref $messages[-1]{content};
             return;
         }
 
         my @content_blocks = eval { parse_response($resp) };
         if ($@) {
-            print "\n$@";
+            emit_error($@);
             pop @messages if @messages && !ref $messages[-1]{content};
             return;
         }
@@ -1605,7 +1724,7 @@ sub handle_turn {
         # 空の応答(安全フィルタ・トークン上限で本文なし 等)。空の assistant
         # ターンを履歴に入れると以後ずっと壊れるので、入れずに戻る。
         unless (@content_blocks) {
-            print "\n(AIからの応答が空でした。言い方を変えてもう一度どうぞ)\n";
+            emit_error("(AIからの応答が空でした。言い方を変えてもう一度どうぞ)");
             pop @messages if @messages && !ref $messages[-1]{content};
             return;
         }
@@ -1616,10 +1735,10 @@ sub handle_turn {
         for my $block (@content_blocks) {
             my $t = $block->{type} || '';
             if ($t eq 'text') {
-                print "\n$PROVIDER> $block->{text}\n";
+                emit_text($block->{text});
             }
             elsif ($t eq 'tool_use') {
-                print "\n[tool_use] $block->{name}(" . MiniJSON::encode($block->{input}) . ")\n";
+                emit_tool($block->{name}, $block->{input});
                 my $result = eval { run_tool($block->{name}, $block->{input}) };
                 $result = "ツール実行でエラーが出ました: $@" if $@;
                 push @tool_results, {
