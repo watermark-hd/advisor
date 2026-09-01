@@ -193,17 +193,17 @@ class AdvisorGUI:
         dlg.title("パスフレーズ")
         dlg.transient(self.root)
         dlg.grab_set()
-        tk.Label(dlg, text=prompt, padx=16, pady=(14, 4)).pack()
+        tk.Label(dlg, text=prompt).pack(padx=16, pady=(14, 4))
         var = tk.StringVar()
-        ent = tk.Entry(dlg, show="●", textvariable=var, width=32)
+        ent = tk.Entry(dlg, show="*", textvariable=var, width=32)
         ent.pack(padx=16, pady=6)
         ent.focus_set()
 
         var2 = tk.StringVar()
         ent2 = None
         if is_new:
-            tk.Label(dlg, text="もう一度（確認）", padx=16).pack()
-            ent2 = tk.Entry(dlg, show="●", textvariable=var2, width=32)
+            tk.Label(dlg, text="もう一度（確認）").pack(padx=16)
+            ent2 = tk.Entry(dlg, show="*", textvariable=var2, width=32)
             ent2.pack(padx=16, pady=6)
         msg = tk.Label(dlg, text="", fg="#c00")
         msg.pack()
