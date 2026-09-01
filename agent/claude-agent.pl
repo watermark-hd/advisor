@@ -37,21 +37,39 @@ $| = 1;
 # 端末設定を起動時に控えておき、どんな終わり方をしても必ず元に戻す。
 # read_line_interactive は端末を raw モードにするので、途中で die すると
 # 端末が壊れたまま(入力が見えない・改行されない)になってしまう。
-# 不具合調査用。環境変数 CLAUDE_DEBUG_LOG にファイルパスを設定すると、
-# 動作の要所・API のやり取り・警告・捕捉した例外をそのファイルに追記する。
-sub dbg {
-    return unless $ENV{CLAUDE_DEBUG_LOG};
-    my $msg = join('', @_);
-    if (open(my $fh, '>>:encoding(UTF-8)', $ENV{CLAUDE_DEBUG_LOG})) {
+# --- ログ2種 ---
+# blog(): 常時ONの「パンくず」ログ。会話の中身は書かず、動作の節目と
+#   終了理由だけを ~/.claude-agent/session.log に残す(起動時に消す)。
+#   次に落ちたとき、環境変数の設定なしで最後の様子が分かるように。
+# dbg():  CLAUDE_DEBUG_LOG=<path> のときだけ動く詳細ログ。APIの生の
+#   やり取りまで書く。
+my $BLOG_PATH = ($ENV{HOME} || '.') . '/.claude-agent/session.log';
+{
+    my $d = ($ENV{HOME} || '.') . '/.claude-agent';
+    mkdir($d, 0700) unless -d $d;
+    if (open(my $fh, '>', $BLOG_PATH)) { print $fh ''; close $fh; chmod 0600, $BLOG_PATH; }
+}
+sub _logline {
+    my ($path, $msg) = @_;
+    return unless $path;
+    if (open(my $fh, '>>:encoding(UTF-8)', $path)) {
         my @t = localtime;
         printf $fh "[%02d:%02d:%02d] %s\n", $t[2], $t[1], $t[0], $msg;
         close $fh;
     }
 }
+sub blog { _logline($BLOG_PATH, join('', @_)); }
+sub dbg  {
+    my $line = join('', @_);
+    blog(substr($line, 0, 200)) if $line !~ /^BODY:/;       # 本文以外は節目としてパンくずにも
+    _logline($ENV{CLAUDE_DEBUG_LOG}, $line) if $ENV{CLAUDE_DEBUG_LOG};
+}
 
 # perl の警告(Deep recursion / Out of memory / uninitialized など)も
-# ログに落とす。無限ループやメモリ枯渇の手前が見えることがある。
-$SIG{__WARN__} = sub { my $w = shift; dbg("WARN: $w"); warn $w; };
+# 残す。無限ループやメモリ枯渇の手前が見えることがある。
+$SIG{__WARN__} = sub { my $w = shift; blog("WARN: $w"); dbg("WARN: $w"); warn $w; };
+
+blog("=== advisor start (pid $$) ===");
 
 # 端末設定を起動時に控えておき、どんな終わり方をしても必ず元に戻す。
 # read_line_interactive は端末を raw モードにするので、途中で die すると
@@ -59,10 +77,11 @@ $SIG{__WARN__} = sub { my $w = shift; dbg("WARN: $w"); warn $w; };
 our $ORIG_STTY = `stty -g 2>/dev/null`;
 chomp $ORIG_STTY;
 sub restore_tty { system('stty', $ORIG_STTY) if $ORIG_STTY ne ''; }
-END { dbg("END reached (exit=$?)"); restore_tty(); }
-$SIG{INT}  = sub { dbg("SIGINT"); restore_tty(); print "\n中断しました。\n"; exit 130; };
-$SIG{TERM} = sub { dbg("SIGTERM"); restore_tty(); exit 143; };
-$SIG{__DIE__} = sub { dbg("DIE" . ($^S ? "(in eval)" : "(FATAL)") . ": $_[0]"); return; };
+END { blog("END reached (exit=$?)"); restore_tty(); }
+$SIG{INT}  = sub { blog("SIGINT");  restore_tty(); print "\n中断しました。\n"; exit 130; };
+$SIG{TERM} = sub { blog("SIGTERM"); restore_tty(); exit 143; };
+$SIG{HUP}  = sub { blog("SIGHUP (端末が閉じられた?)"); restore_tty(); exit 129; };
+$SIG{__DIE__} = sub { blog("DIE" . ($^S ? "(in eval)" : "(FATAL)") . ": " . substr($_[0],0,300)); return; };
 
 # ------------------------------------------------------------------
 # コマンドライン引数 (--help / --version はAPIキー無しでも動作させる)
@@ -513,7 +532,8 @@ sub call_api {
     }
     unlink $tmp_resp;
 
-    dbg("RESP HTTP=$http_code  (" . length($resp_body) . " chars)\n$resp_body");
+    dbg("RESP HTTP=$http_code  (" . length($resp_body) . " chars)");
+    dbg("BODY:\n$resp_body");
 
     if ($http_code !~ /^2/) {
         if ($http_code eq '' || $http_code eq '000') {
@@ -1254,11 +1274,13 @@ sub confirm {
         };
 
         my $result;
+        my $ctrld_seen = 0;   # 空行での Ctrl-D。1回目は警告、2回で終了。
         RAW_LOOP: while (1) {
             my $ch = $read_byte->();
             if (!defined $ch) {
                 _debug_log("EOF\n");
-                $result = undef;  # EOF (Ctrl-D)
+                dbg("readline: real EOF on STDIN");
+                $result = undef;  # 本物のEOF(標準入力が閉じた)
                 last RAW_LOOP;
             }
             my $b = ord($ch);
@@ -1275,10 +1297,18 @@ sub confirm {
                 $result = '';
                 last RAW_LOOP;
             }
-            elsif ($b == 4) {                  # Ctrl-D: 空行ならEOF
+            elsif ($b == 4) {                  # Ctrl-D
+                # 誤爆で1発終了しないよう、空行では2回連続で押されたときだけEOF。
                 if ($buf eq '') {
-                    $result = undef;
-                    last RAW_LOOP;
+                    $ctrld_seen++;
+                    if ($ctrld_seen >= 2) {
+                        dbg("readline: Ctrl-D x2 -> EOF");
+                        $result = undef;
+                        last RAW_LOOP;
+                    }
+                    print "\r\n(終了するなら exit と入力するか、もう一度 Ctrl-D)\n";
+                    print $redraw_prompt;
+                    $rows_used = (_pos_rc(_display_width_chars($redraw_prompt), $term_cols))[0] + 1;
                 }
             }
             elsif ($b == 127 || $b == 8) {      # Backspace

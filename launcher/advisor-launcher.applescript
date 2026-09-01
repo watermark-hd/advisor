@@ -11,6 +11,9 @@ on run
 		activate
 		-- 新しいウィンドウでログインシェルが起動し ~/.bash_profile が読まれるので、
 		-- setup.sh が PATH に足した ~/bin の advisor がそのまま見つかる。
-		do script "clear; advisor"
+		-- advisor が終了(または落ちても)ウィンドウが即消えないよう、
+		-- 後ろに対話シェルを exec して開いたままにする。原因を画面で確認でき、
+		-- そのまま `advisor` で再起動もできる。
+		do script "clear; advisor; echo; echo '── advisor を終了しました（このウィンドウで advisor と打つと再起動できます）──'; echo; exec \"$SHELL\" -l"
 	end tell
 end run
