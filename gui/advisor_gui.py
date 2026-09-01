@@ -128,7 +128,10 @@ class AdvisorGUI:
         try:
             while True:
                 obj = self.events.get_nowait()
-                self._handle(obj)
+                try:
+                    self._handle(obj)
+                except Exception as e:            # 1件の不正イベントでループを止めない
+                    self._append(f"\n(内部エラー: {e})\n", "err")
         except queue.Empty:
             pass
         self.root.after(80, self._pump)
@@ -143,11 +146,11 @@ class AdvisorGUI:
             self._set_busy(False)
         elif t == "text":
             self._append("\nAI: ", "ai")
-            self._append(obj.get("text", "") + "\n", "ai")
+            self._append(str(obj.get("text", "")) + "\n", "ai")
         elif t == "note":
-            self._append("\n" + obj.get("text", "") + "\n", "note")
+            self._append("\n" + str(obj.get("text", "")) + "\n", "note")
         elif t == "error":
-            self._append("\n" + obj.get("text", "") + "\n", "err")
+            self._append("\n" + str(obj.get("text", "")) + "\n", "err")
         elif t == "tool":
             self._append(f"\n[道具] {obj.get('name','')}\n", "tool")
         elif t == "status":
@@ -184,6 +187,8 @@ class AdvisorGUI:
         self._write({"t": "user", "text": str(n)})
 
     def _ask_passphrase(self, prompt):
+        # 「新しい…」を決めるときだけ、打ち間違い防止に確認欄を出す。
+        is_new = "新し" in prompt
         dlg = tk.Toplevel(self.root)
         dlg.title("パスフレーズ")
         dlg.transient(self.root)
@@ -194,11 +199,26 @@ class AdvisorGUI:
         ent.pack(padx=16, pady=6)
         ent.focus_set()
 
+        var2 = tk.StringVar()
+        ent2 = None
+        if is_new:
+            tk.Label(dlg, text="もう一度（確認）", padx=16).pack()
+            ent2 = tk.Entry(dlg, show="●", textvariable=var2, width=32)
+            ent2.pack(padx=16, pady=6)
+        msg = tk.Label(dlg, text="", fg="#c00")
+        msg.pack()
+
         def done(_=None):
-            self._write({"t": "passphrase", "value": var.get()})
+            v = var.get()
+            if is_new and v != var2.get():
+                msg.config(text="一致しません")
+                return
+            self._write({"t": "passphrase", "value": v})
             dlg.destroy()
 
-        ent.bind("<Return>", done)
+        ent.bind("<Return>", (lambda e: ent2.focus_set()) if is_new else done)
+        if ent2 is not None:
+            ent2.bind("<Return>", done)
         tk.Button(dlg, text="OK", command=done).pack(pady=(4, 14))
         dlg.protocol("WM_DELETE_WINDOW", lambda: (self._write({"t": "passphrase", "value": ""}), dlg.destroy()))
 

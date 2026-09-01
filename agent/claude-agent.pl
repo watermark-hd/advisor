@@ -1004,6 +1004,32 @@ sub unlock_history {
         mkdir($d, 0700) unless -d $d;
     }
 
+    # GUI モード: パスフレーズ要求は必ず「1回の need_passphrase = 1回の
+    # ダイアログ」にする。端末用の2回入力・合言葉・旧形式移行はここでは扱わず、
+    # 素直な「新規設定 or 解錠」だけにする(GUI側が二重入力の確認をする)。
+    if ($GUI) {
+        return 0 if -f $HISTORY_CHECK && ! -f $KEY_FILE;   # 旧形式は端末側で移行してもらう
+
+        if (-f $KEY_FILE) {                                 # 解錠
+            while (1) {
+                my $pass = read_secret("履歴パスフレーズ");
+                return 0 unless defined $pass && $pass ne '';   # 空=履歴なしで起動
+                my $master = _open_master($pass, $KEY_FILE);
+                if (defined $master) { $ENV{CLAUDE_HIST_PASS} = $master; return 1; }
+                emit_error("パスフレーズが違います。もう一度どうぞ。");
+            }
+        }
+
+        # 初回設定
+        my $p = read_secret("新しい履歴パスフレーズを決めてください");
+        return 0 unless defined $p && $p ne '';
+        my $master = _gen_master();
+        return 0 unless defined $master;
+        return 0 unless _save_master($p, $master, $KEY_FILE);
+        $ENV{CLAUDE_HIST_PASS} = $master;
+        return 1;
+    }
+
     # 旧形式の移行
     if (-f $HISTORY_CHECK && ! -f $KEY_FILE) {
         my $master = migrate_check_file();
