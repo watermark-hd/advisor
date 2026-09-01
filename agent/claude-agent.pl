@@ -510,13 +510,13 @@ sub call_api {
 
     dbg("REQ $PROVIDER $MODEL -> $url  (" . length($body_json) . " bytes)");
 
-    # 応答待ちのあいだ画面が固まって見えないよう、一言出しておいて
-    # 返ってきたら消す(古い機械だと初回接続で数秒〜十数秒かかる)。
-    print "  問い合わせ中...";
+    # 応答待ちのあいだ画面が固まって見えないよう一言出す。
+    # カーソル制御のエスケープは一切使わない(古い Terminal.app が
+    # 文字描画で落ちるため。消さずに1行残すだけにする)。
+    print "  … 問い合わせ中\n";
     my $http_code = `@{[quote($CURL)]} -K @{[quote($tmp_config)]}`;
     $http_code = '' unless defined $http_code;
     $http_code =~ s/\s+//g;
-    print "\r\x1b[K";
     unlink $tmp_req, $tmp_config;
 
     # レスポンスは生バイトで読んでからまとめてデコードする。
