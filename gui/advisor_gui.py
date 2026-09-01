@@ -106,20 +106,13 @@ class AdvisorGUI:
         self.switch_btn.config(menu=self.switch_menu)
         self.switch_btn.pack(side=tk.RIGHT, padx=6, pady=4)
 
-        # ノート本体
-        mid = tk.Frame(self.root)
-        mid.pack(fill=tk.BOTH, expand=True)
-        self.note = tk.Text(mid, wrap=tk.WORD, state=tk.DISABLED,
-                            padx=18, pady=14, relief=tk.FLAT,
-                            highlightthickness=0, spacing2=2)
-        sb = tk.Scrollbar(mid, command=self.note.yview)
-        self.note.config(yscrollcommand=sb.set)
-        sb.pack(side=tk.RIGHT, fill=tk.Y)
-        self.note.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # 下から順に固定で確保する(こうしないと会話欄が伸びて入力欄が
+        # 画面外に押し出される)。ステータス → 入力欄 → の順に BOTTOM 詰め。
+        self.status_lbl = tk.Label(self.root, textvariable=self.status_var, anchor=tk.W)
+        self.status_lbl.pack(side=tk.BOTTOM, fill=tk.X)
 
-        # 入力欄
         self.inbar = tk.Frame(self.root)
-        self.inbar.pack(fill=tk.X)
+        self.inbar.pack(side=tk.BOTTOM, fill=tk.X)
         self.entry = tk.Text(self.inbar, height=4, wrap=tk.WORD,
                              relief=tk.FLAT, highlightthickness=1, padx=8, pady=6)
         self.entry.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(8, 4), pady=6)
@@ -128,8 +121,16 @@ class AdvisorGUI:
                                   command=self._send_current)
         self.send_btn.pack(side=tk.LEFT, padx=(0, 8), pady=6)
 
-        self.status_lbl = tk.Label(self.root, textvariable=self.status_var, anchor=tk.W)
-        self.status_lbl.pack(fill=tk.X)
+        # 会話ノート(残りの領域いっぱい)
+        mid = tk.Frame(self.root)
+        mid.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self.note = tk.Text(mid, wrap=tk.WORD, state=tk.DISABLED, height=1,
+                            padx=18, pady=14, relief=tk.FLAT,
+                            highlightthickness=0, spacing2=2)
+        sb = tk.Scrollbar(mid, command=self.note.yview)
+        self.note.config(yscrollcommand=sb.set)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        self.note.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
     def _apply_theme(self, name):
         t = THEMES[name]
@@ -149,21 +150,21 @@ class AdvisorGUI:
                           insertbackground=t["input_fg"],
                           highlightbackground=t["bar_bg"],
                           highlightcolor=t["dim"])
-        # LINE と同じ向き: 相手(AI)は左、自分は右寄せ。名前ラベルは付けない。
-        # 全角4文字ぶんくらいのぶら下げ/余白で分ける。行間は詰めて、区切りは
-        # 薄いヨコ線に任せる(行間で分けると、どちらの発言か分かりにくい)。
-        pad4 = f[1] * 4
+        # LINE と同じ向き: 相手(AI)は左、自分は右。ただし端に寄せすぎず、
+        # 両側とも中央寄りから始める(外側に余白 pad を残す)。名前ラベルなし。
+        pad = f[1] * 5
         self.note.tag_config("ai", foreground=t["ai"],
-                             lmargin1=6, lmargin2=6, rmargin=pad4,
+                             lmargin1=pad, lmargin2=pad, rmargin=pad,
                              spacing1=2, spacing3=2)
         self.note.tag_config("you", foreground=t["fg"], justify=tk.RIGHT,
-                             lmargin1=pad4, lmargin2=pad4, rmargin=8,
+                             lmargin1=pad, lmargin2=pad, rmargin=pad,
                              spacing1=2, spacing3=2)
         self.note.tag_config("dim", foreground=t["dim"],
-                             lmargin1=6, lmargin2=6, spacing1=2,
+                             lmargin1=pad, lmargin2=pad, spacing1=2,
                              font=(f[0], f[1] - 2))
         self.note.tag_config("err", foreground=t["err"],
-                             lmargin1=6, lmargin2=6, spacing1=2)
+                             lmargin1=pad, lmargin2=pad, spacing1=2)
+        # 区切り線は逆に、会話より外側(左右)まで長めに引く
         self.note.tag_config("rule", foreground=t["dim"], justify=tk.CENTER,
                              font=(f[0], max(8, f[1] - 3)), spacing1=6, spacing3=6)
         self.theme_btn.config(text="見た目: " + t["label"])
@@ -177,8 +178,8 @@ class AdvisorGUI:
     def _append(self, text, tag):
         self.note.config(state=tk.NORMAL)
         if self.note.index("end-1c") != "1.0":
-            # 発言のあいだに、中央に短い薄線の区切り(原稿の場面転換ふう)。
-            self.note.insert(tk.END, "\n" + "─" * 16 + "\n", "rule")
+            # 発言のあいだに薄いヨコ線の区切り。会話より外まで長めに。
+            self.note.insert(tk.END, "\n" + "─" * 40 + "\n", "rule")
         self.note.insert(tk.END, text.rstrip("\n"), tag)
         self.note.insert(tk.END, "\n")
         self.note.see(tk.END)
