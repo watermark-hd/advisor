@@ -1176,17 +1176,22 @@ sub confirm {
         return ($row, $col);
     }
 
-    # プロンプトを表示しつつ1行を対話的に読み込む。矢印キー・Backspace・
-    # (use_historyが真なら)↑↓での履歴呼び出しに対応する。
-    # 戻り値: 入力された行(生バイト、改行なし)。Ctrl-DでのEOFはundef。
+    # プロンプトを表示しつつ1行読み込む。
+    #
+    # 既定は「素の入力」: 端末を raw にせず <STDIN> で1行読むだけ。
+    # 理由 — 矢印キー対応の自作行編集は、キー入力のたびに端末へ大量の
+    # カーソル移動・全行再描画のエスケープシーケンスを送る。High Sierra の
+    # Terminal.app 2.8.3 はこの負荷(特に日本語=CoreText グリフ描画)で
+    # グリフ描画中に heap corruption を起こして abort することがある
+    # (Terminal 側のバグ。crash report で確認済み)。実用上、行編集より
+    # 「落ちないこと」を優先する。
+    #
+    # CLAUDE_FANCY_INPUT=1 で従来の行編集(←→移動・↑↓履歴)に戻せる。
     sub read_line_interactive {
         my ($prompt, $use_history) = @_;
         $use_history = 1 unless defined $use_history;
 
-        # CLAUDE_SIMPLE_INPUT=1 のときは、矢印キー編集や再描画を一切せず、
-        # 素の <STDIN> で1行読むだけにする。凝った行編集が不安定なとき用の
-        # 確実なフォールバック(カーソル移動や履歴は使えなくなる)。
-        if ($ENV{CLAUDE_SIMPLE_INPUT}) {
+        unless ($ENV{CLAUDE_FANCY_INPUT}) {
             (my $p = $prompt) =~ s/^\n+//;
             print "\n" if $prompt =~ /^\n/;
             print $p;
@@ -1521,7 +1526,7 @@ if (@MODEL_CHOICES) {
 } else {
     print "[$PROVIDER / $MODEL]\n";
 }
-print "\nこんにちは。(終了は 'exit' または Ctrl-D)\n";
+print "\nこんにちは。(終了するときは exit と入力)\n";
 
 # 1ターン分の処理。'quit' を返したら会話終了、それ以外は継続。
 # ここで die しても、呼び出し側の eval が受け止めてプログラムは落ちない。
