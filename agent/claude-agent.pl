@@ -325,7 +325,7 @@ sub emit_tool {
 sub emit_status {
     my ($text) = @_;
     if ($GUI) { gui_send({ t => 'status', text => $text }); }
-    elsif ($text ne '') { print "  … $text\n"; }
+    elsif ($text ne '') { print "\n... $text\n"; }
 }
 sub emit_error {
     my ($text) = @_;
@@ -1281,8 +1281,23 @@ sub confirm {
             print $p;
             my $line = <STDIN>;
             return undef unless defined $line;   # EOF
-            $line =~ s/\r?\n\z//;
-            return $line;                        # 生バイト(呼び出し側でデコード)
+
+            # 複数行を貼り付けると1行=1メッセージに割れてしまうのを防ぐ。
+            # 最初の行を読んだ直後、まだ入力がバッファに残っていれば(=貼り付け)、
+            # 続く行も同じメッセージとしてまとめる。人が1行ずつ考えて打つ場合は
+            # 次の行まで間があくので、この待ち時間(50ms)には引っかからない。
+            eval {
+                my $rin = '';
+                vec($rin, fileno(STDIN), 1) = 1;
+                while (select(my $r = $rin, undef, undef, 0.05)) {
+                    my $more = <STDIN>;
+                    last unless defined $more;
+                    $line .= $more;
+                }
+            };
+
+            $line =~ s/\r?\n\z//;                 # 末尾の改行だけ落とす(中の改行は残す)
+            return $line;                         # 生バイト(呼び出し側でデコード)
         }
 
         my $orig_stty = `stty -g`;
