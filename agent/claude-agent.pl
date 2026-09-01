@@ -37,15 +37,8 @@ $| = 1;
 # 端末設定を起動時に控えておき、どんな終わり方をしても必ず元に戻す。
 # read_line_interactive は端末を raw モードにするので、途中で die すると
 # 端末が壊れたまま(入力が見えない・改行されない)になってしまう。
-our $ORIG_STTY = `stty -g 2>/dev/null`;
-chomp $ORIG_STTY;
-sub restore_tty { system('stty', $ORIG_STTY) if $ORIG_STTY ne ''; }
-END { restore_tty(); }
-$SIG{INT}  = sub { restore_tty(); print "\n中断しました。\n"; exit 130; };
-$SIG{TERM} = sub { restore_tty(); exit 143; };
-
 # 不具合調査用。環境変数 CLAUDE_DEBUG_LOG にファイルパスを設定すると、
-# API のリクエスト概要・HTTPコード・生レスポンス・捕捉した例外を追記する。
+# 動作の要所・API のやり取り・警告・捕捉した例外をそのファイルに追記する。
 sub dbg {
     return unless $ENV{CLAUDE_DEBUG_LOG};
     my $msg = join('', @_);
@@ -55,6 +48,21 @@ sub dbg {
         close $fh;
     }
 }
+
+# perl の警告(Deep recursion / Out of memory / uninitialized など)も
+# ログに落とす。無限ループやメモリ枯渇の手前が見えることがある。
+$SIG{__WARN__} = sub { my $w = shift; dbg("WARN: $w"); warn $w; };
+
+# 端末設定を起動時に控えておき、どんな終わり方をしても必ず元に戻す。
+# read_line_interactive は端末を raw モードにするので、途中で die すると
+# 端末が壊れたまま(入力が見えない・改行されない)になってしまう。
+our $ORIG_STTY = `stty -g 2>/dev/null`;
+chomp $ORIG_STTY;
+sub restore_tty { system('stty', $ORIG_STTY) if $ORIG_STTY ne ''; }
+END { dbg("END reached (exit=$?)"); restore_tty(); }
+$SIG{INT}  = sub { dbg("SIGINT"); restore_tty(); print "\n中断しました。\n"; exit 130; };
+$SIG{TERM} = sub { dbg("SIGTERM"); restore_tty(); exit 143; };
+$SIG{__DIE__} = sub { dbg("DIE" . ($^S ? "(in eval)" : "(FATAL)") . ": $_[0]"); return; };
 
 # ------------------------------------------------------------------
 # コマンドライン引数 (--help / --version はAPIキー無しでも動作させる)
@@ -1155,6 +1163,19 @@ sub confirm {
         my ($prompt, $use_history) = @_;
         $use_history = 1 unless defined $use_history;
 
+        # CLAUDE_SIMPLE_INPUT=1 のときは、矢印キー編集や再描画を一切せず、
+        # 素の <STDIN> で1行読むだけにする。凝った行編集が不安定なとき用の
+        # 確実なフォールバック(カーソル移動や履歴は使えなくなる)。
+        if ($ENV{CLAUDE_SIMPLE_INPUT}) {
+            (my $p = $prompt) =~ s/^\n+//;
+            print "\n" if $prompt =~ /^\n/;
+            print $p;
+            my $line = <STDIN>;
+            return undef unless defined $line;   # EOF
+            $line =~ s/\r?\n\z//;
+            return $line;                        # 生バイト(呼び出し側でデコード)
+        }
+
         my $orig_stty = `stty -g`;
         chomp $orig_stty;
         my $term_cols = _term_width();
@@ -1476,6 +1497,7 @@ print "\nこんにちは。(終了は 'exit' または Ctrl-D)\n";
 # ここで die しても、呼び出し側の eval が受け止めてプログラムは落ちない。
 sub handle_turn {
     my ($input) = @_;
+    dbg("turn start: msgs=" . scalar(@messages) . " input=" . substr($input, 0, 80));
 
     return 'quit' if $input eq 'exit';
 
@@ -1526,7 +1548,9 @@ sub handle_turn {
     push @messages, { role => 'user', content => $input };
 
     while (1) {
+        dbg("build_request: msgs=" . scalar(@messages));
         my $body = build_request(\@messages, \@TOOLS, $SYSTEM_PROMPT);
+        dbg("encode+call_api");
         my $resp = eval { call_api($API_URL, build_headers(), MiniJSON::encode($body)) };
         if ($@) {
             # 通信エラーなど。素のユーザー発言のターンなら取り消して戻る
@@ -1584,6 +1608,7 @@ sub handle_turn {
 # 1ターンごとに eval で囲み、どこで die が起きてもプログラム全体は落とさず
 # 入力プロンプトに戻す。端末設定も毎回念のため戻す。
 while (1) {
+    dbg("--- waiting for input (readline) ---");
     my $input = eval { read_line_interactive("\nご用件をどうぞ> ") };
     if ($@) {
         restore_tty();
@@ -1591,6 +1616,7 @@ while (1) {
         print "\n[入力エラー] 続けます。\n";
         next;
     }
+    dbg("readline returned: " . (defined $input ? "len=" . length($input) : "undef(EOF)"));
     last unless defined $input;
 
     $input = eval { decode('UTF-8', $input, FB_DEFAULT) };
