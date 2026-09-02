@@ -250,12 +250,14 @@ class AdvisorGUI:
         self._draw_holes()
 
         # 色・書体・寄せだけ。左右の余白(1/3)は _relayout が幅から計算する。
-        self.note.tag_config("you", foreground=t["fg"], justify=tk.RIGHT,
+        # 自分の発言は「右側 2/3 のブロックに置く」が、文字は左そろえ。
+        # (右寄せにすると2行目以降が右にばらけて読みにくい、との指摘)
+        self.note.tag_config("you", foreground=t["fg"], justify=tk.LEFT,
                              spacing1=3, spacing3=3)
         self.note.tag_config("ai", foreground=t["ai"], justify=tk.LEFT,
                              spacing1=3, spacing3=3)
         self.note.tag_config("prompt", foreground=t.get("prompt", t["fg"]),
-                             justify=tk.RIGHT, font=(f[0], f[1], "bold"))
+                             justify=tk.LEFT, font=(f[0], f[1], "bold"))
         self.note.tag_config("dim", foreground=t["dim"], justify=tk.LEFT,
                              spacing1=3, font=(f[0], f[1] - 2))
         self.note.tag_config("err", foreground=t["err"], justify=tk.LEFT, spacing1=3)
