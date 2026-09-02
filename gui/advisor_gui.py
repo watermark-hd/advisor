@@ -151,9 +151,9 @@ class AdvisorGUI:
         self.switch_btn.config(menu=self.switch_menu)
         self.switch_btn.pack(side=tk.RIGHT, padx=6, pady=4)
 
-        # ヘッダー(gemini / ノート 等)の下の細い罫線。
+        # ヘッダー(gemini / ノート 等)の下の細い罫線。左右を少し空ける。
         self.hdr_rule = tk.Frame(self.root, height=2)
-        self.hdr_rule.pack(side=tk.TOP, fill=tk.X)
+        self.hdr_rule.pack(side=tk.TOP, fill=tk.X, padx=56)
 
         # 下から順に固定で確保する(こうしないと会話欄が伸びて入力欄が
         # 画面外に押し出される)。ステータス → 入力欄 → 罫線 の順に BOTTOM 詰め。
@@ -163,8 +163,8 @@ class AdvisorGUI:
         self.inbar = tk.Frame(self.root)
         self.inbar.pack(side=tk.BOTTOM, fill=tk.X)
         self.in_rule = tk.Frame(self.root, height=2)          # 入力欄の上の罫線
-        self.in_rule.pack(side=tk.BOTTOM, fill=tk.X)
-        self.entry = tk.Text(self.inbar, height=4, wrap=tk.CHAR,
+        self.in_rule.pack(side=tk.BOTTOM, fill=tk.X, padx=56)
+        self.entry = tk.Text(self.inbar, height=3, wrap=tk.CHAR,
                              relief=tk.FLAT, highlightthickness=0, padx=8, pady=6)
         self.entry.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(8, 4), pady=6)
         self.entry.bind("<Return>", self._on_return)
@@ -224,7 +224,8 @@ class AdvisorGUI:
         self.hdr_rule.config(bg=line)                       # ヘッダー下の罫線
         self.in_rule.config(bg=line)                        # 入力欄の上の罫線
         self.note.config(bg=t["bg"], fg=t["fg"], font=f, insertbackground=t["fg"])
-        self.entry.config(bg=t["bg"], fg=t["input_fg"], font=f,
+        # 入力欄はモード間で高さを揃えるためフォントサイズを 13 で頭打ちに。
+        self.entry.config(bg=t["bg"], fg=t["input_fg"], font=(f[0], min(f[1], 13)),
                           insertbackground=t["input_fg"])
         self._draw_holes()
 
@@ -253,7 +254,7 @@ class AdvisorGUI:
             self.root.after(60, self._relayout)
             return
         third = int(w / 3)
-        near = self.font[1]
+        near = self.font[1] * 2          # 端に文字が食い込まないよう余白を確保
         self.note.tag_config("you", lmargin1=third, lmargin2=third, rmargin=near)
         for tag in ("ai", "dim", "err"):
             self.note.tag_config(tag, lmargin1=near, lmargin2=near, rmargin=third)
