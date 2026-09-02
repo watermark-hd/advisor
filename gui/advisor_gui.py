@@ -30,7 +30,7 @@ THEMES = {
     "paper": {
         "label": "ノート",
         "bg": "#faf7ef", "fg": "#2b2b2b", "ai": "#1f3b57",
-        "dim": "#8a8578", "err": "#a5341f",
+        "dim": "#8a8578", "err": "#a5341f", "rule": "#c9b98f",
         "input_bg": "#fffdf6", "input_fg": "#2b2b2b",
         "bar_bg": "#efe9db", "bar_fg": "#5a5343",
         "font": ("Hiragino Sans", 14), "mono": False,
@@ -38,7 +38,7 @@ THEMES = {
     "hacker": {
         "label": "ハッカー",
         "bg": "#000000", "fg": "#39ff5a", "ai": "#26c2a0",
-        "dim": "#2e7d4f", "err": "#ff5555",
+        "dim": "#2e7d4f", "err": "#ff5555", "rule": "#39ff5a",
         "input_bg": "#050805", "input_fg": "#39ff5a",
         "bar_bg": "#0a0f0a", "bar_fg": "#2e7d4f",
         "font": ("Menlo", 13), "mono": True,
@@ -182,8 +182,9 @@ class AdvisorGUI:
         self.note.tag_config("err", foreground=t["err"],
                              lmargin1=pad, lmargin2=pad, spacing1=2)
         # 区切り線は逆に、会話より外側(左右)まで長めに引く
-        self.note.tag_config("rule", foreground=t["dim"], justify=tk.CENTER,
-                             font=(f[0], max(8, f[1] - 3)), spacing1=6, spacing3=6)
+        self.note.tag_config("rule", foreground=t.get("rule", t["dim"]),
+                             justify=tk.CENTER, font=(f[0], max(10, f[1] - 1)),
+                             spacing1=8, spacing3=8)
         self.theme_btn.config(text="見た目: " + t["label"] + " ▾")
 
     def _choose_theme(self, key):
