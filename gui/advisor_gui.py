@@ -18,12 +18,29 @@ Terminal.app の2バイト文字バグを回避できる)、会話は上の"ノ�
 import json
 import os
 import queue
+import re
 import subprocess
 import threading
 import tkinter as tk
 from tkinter import messagebox
 
 CFG_PATH = os.path.expanduser("~/.claude-agent/gui.json")
+
+# ```lang ... ``` のコードブロック検出
+FENCE_RE = re.compile(r"```[ \t]*([\w+.\-]*)[ \t]*\n(.*?)```", re.DOTALL)
+# ざっくりした汎用ハイライト(python/js/sh/json あたりを想定)。
+# 並び順が優先度: 文字列 → コメント → 数値 → キーワード。
+CODE_RE = re.compile(r"""
+    (?P<str>"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)
+  | (?P<com>\#[^\n]*|//[^\n]*|/\*.*?\*/)
+  | (?P<num>\b\d+(?:\.\d+)?\b)
+  | (?P<kw>\b(?:def|class|return|if|elif|else|for|while|import|from|as|try|
+        except|finally|raise|with|lambda|pass|break|continue|yield|True|False|
+        None|and|or|not|in|is|async|await|function|const|let|var|new|typeof|
+        export|default|extends|super|this|null|undefined|echo|then|fi|do|done|
+        case|esac|local|self|print)\b)
+""", re.VERBOSE | re.DOTALL)
+HL_TAG = {"str": "code_str", "com": "code_com", "num": "code_num", "kw": "code_kw"}
 
 # テーマ定義。レイアウトは全モード共通(読みやすさ優先):
 #   自分の発言 = 右寄せ、ブロックの左は 1/3 空ける
@@ -39,6 +56,7 @@ THEMES = {
         "dim": "#9a8f78", "err": "#a5341f", "rule": "#d7b7ab", "code_bg": "#efe6cf",
         "line": "#c96b63",                                    # 昔のルーズリーフの赤い罫
         "input_bg": "#f6efdc", "input_fg": "#243b6b",
+        "hl": {"kw": "#7a3b8f", "str": "#8a5a2b", "com": "#9a8f78", "num": "#3a5a3a"},
         "font": ("Hiragino Maru Gothic ProN", 15),
     },
     "coding": {
@@ -46,6 +64,7 @@ THEMES = {
         "bg": "#1e1e1e", "fg": "#d4d4d4", "ai": "#cfcfcf", "prompt": "#c586c0",
         "dim": "#7a7a7a", "err": "#f48771", "rule": "#3a3a3a", "code_bg": "#252526",
         "line": "#3a3a3a", "input_bg": "#1e1e1e", "input_fg": "#d4d4d4",
+        "hl": {"kw": "#569cd6", "str": "#ce9178", "com": "#6a9955", "num": "#b5cea8"},
         "font": ("Menlo", 13),
     },
     "hacker": {
@@ -53,6 +72,7 @@ THEMES = {
         "bg": "#000000", "fg": "#39ff5a", "ai": "#33dd88", "prompt": "#00e5ff",
         "dim": "#2e7d4f", "err": "#ff5555", "rule": "#2e9d55", "code_bg": "#041004",
         "line": "#2e9d55", "input_bg": "#000000", "input_fg": "#39ff5a",
+        "hl": {"kw": "#00e5ff", "str": "#9dff9d", "com": "#2e7d4f", "num": "#7fffd4"},
         "font": ("Menlo", 13),
     },
 }
@@ -244,6 +264,10 @@ class AdvisorGUI:
                              font=(f[0], max(10, f[1] - 1)), spacing1=8, spacing3=8)
         self.note.tag_config("code", font=code_f, background=t.get("code_bg", t["bg"]),
                              lmargin1=f[1] * 3, lmargin2=f[1] * 3)
+        hl = t.get("hl", {})
+        for key, tag in HL_TAG.items():
+            self.note.tag_config(tag, foreground=hl.get(key, t["ai"]), font=code_f,
+                                 background=t.get("code_bg", t["bg"]))
         self.theme_btn.config(text="見た目: " + t["label"] + " ▾")
         self._relayout()
 
@@ -316,6 +340,40 @@ class AdvisorGUI:
         except tk.TclError:
             return False
 
+    def _render_reply(self, txt):
+        """```コードブロック``` を含む返答を、地の文とコードに分けて描画する。
+        コードは等幅・淡い背景 + ざっくりシンタックス着色。ストリーム表示は
+        しない(構文の途中で色付けが崩れるため一気に出す)。"""
+        self.note.config(state=tk.NORMAL)
+        self._block_sep()
+        pos = 0
+        for m in FENCE_RE.finditer(txt):
+            pre = txt[pos:m.start()].strip("\n")
+            if pre:
+                self.note.insert(tk.END, pre + "\n", "ai")
+            code = m.group(2).rstrip("\n")
+            c0 = self.note.index("end-1c")
+            self.note.insert(tk.END, code + "\n", "code")
+            self._highlight(c0, self.note.index("end-1c"))
+            pos = m.end()
+        tail = txt[pos:].strip("\n")
+        if tail:
+            self.note.insert(tk.END, tail + "\n", "ai")
+        self.note.config(state=tk.DISABLED)
+        if self.note_has_anchor():
+            self.note.yview("q_anchor")
+
+    def _highlight(self, a, b):
+        try:
+            src = self.note.get(a, b)
+        except tk.TclError:
+            return
+        for m in CODE_RE.finditer(src):
+            tag = HL_TAG.get(m.lastgroup)
+            if tag:
+                self.note.tag_add(tag, "%s+%dc" % (a, m.start()),
+                                  "%s+%dc" % (a, m.end()))
+
     # ---------- バックエンド ----------
     def _start_backend(self):
         try:
@@ -374,7 +432,11 @@ class AdvisorGUI:
             self.status_var.set(f"準備完了（履歴: {hist}）")
             self._set_busy(False)
         elif t == "text":
-            self._stream_append(str(obj.get("text", "")), "ai")
+            txt = str(obj.get("text", ""))
+            if "```" in txt:
+                self._render_reply(txt)          # コード入り = 一気に着色描画
+            else:
+                self._stream_append(txt, "ai")   # 地の文だけ = 流し込み
         elif t == "note":
             self._append(str(obj.get("text", "")), "dim")
         elif t == "error":
