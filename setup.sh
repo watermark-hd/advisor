@@ -13,7 +13,7 @@
 #   3. claude-agent.pl と models.txt を ~/claude-build/ に配置
 #   4. ~/bin/advisor ラッパーコマンドの設置
 #   5. bash補完の設置 (~/.bash_profile から source)
-#   6. ダブルクリック用 Advisor.app の生成 (~/Applications、osacompile使用)
+#   6. ダブルクリック用 Advisor.app (GUI) の生成 (~/Applications)
 #   7. 実際にAPIを叩いて疎通確認
 
 set -e
@@ -24,7 +24,7 @@ BUILD_DIR="$HOME/claude-build"
 BIN_DIR="$HOME/bin"
 COMPLETION_FILE="$HOME/.advisor-completion.bash"
 APP_PATH="$HOME/Applications/Advisor.app"
-LAUNCHER_SRC="$SCRIPT_DIR/launcher/advisor-launcher.applescript"
+ICON_SRC="$SCRIPT_DIR/launcher/advisor.icns"
 
 # ~/.claude-agent-env の1行を差し替える(無ければ追記)
 upsert_env() {
@@ -337,22 +337,49 @@ fi
 echo "(次回ログインから有効。今すぐ使うには 'source ~/.bash_profile' を実行するか、新しいターミナルを開いてください)"
 echo ""
 
-# --- 6. ダブルクリック用 Advisor.app の生成 ---
-# ターミナルに不慣れな人でもアイコンから始められるようにするためのランチャー。
-# osacompile はどの macOS にも標準で入っているので追加ビルドは不要。
-if command -v osacompile >/dev/null 2>&1 && [ -f "$LAUNCHER_SRC" ]; then
+# --- 6. ダブルクリック用 Advisor.app (GUI) の生成 ---
+# 追加ツール不要の最小アプリバンドル。中の実行ファイルはシェルスクリプトで、
+# python3 で GUI (advisor_gui.py) を起動するだけ。ターミナルは開かない。
+PY3="$(command -v python3 || true)"
+[ -z "$PY3" ] && [ -x /Library/Frameworks/Python.framework/Versions/3.10/bin/python3 ] \
+  && PY3=/Library/Frameworks/Python.framework/Versions/3.10/bin/python3
+[ -z "$PY3" ] && PY3=/usr/bin/python3
+
+if [ -n "$PY3" ]; then
   mkdir -p "$HOME/Applications"
   rm -rf "$APP_PATH" "$HOME/Applications/Claude.app"
-  if osacompile -o "$APP_PATH" "$LAUNCHER_SRC" 2>/dev/null; then
-    echo "$APP_PATH を作成しました。"
-    echo "  Finderで ~/Applications を開き、Advisor をダブルクリックすると起動します。"
-    echo "  Dockやデスクトップにドラッグしておくと次回から一発です。"
-  else
-    echo "Advisor.app の生成に失敗しました(スキップ)。ターミナルから 'advisor' で問題なく使えます。"
-  fi
+  mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources"
+
+  cat > "$APP_PATH/Contents/MacOS/Advisor" << APPEOF
+#!/bin/bash
+export PATH="\$HOME/bin:/usr/local/bin:/usr/bin:/bin"
+exec "$PY3" "\$HOME/claude-build/advisor_gui.py"
+APPEOF
+  chmod +x "$APP_PATH/Contents/MacOS/Advisor"
+
+  cat > "$APP_PATH/Contents/Info.plist" << 'PLISTEOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleName</key><string>Advisor</string>
+  <key>CFBundleDisplayName</key><string>Advisor</string>
+  <key>CFBundleIdentifier</key><string>com.high-sierra-claude.advisor</string>
+  <key>CFBundleVersion</key><string>0.1</string>
+  <key>CFBundleShortVersionString</key><string>0.1</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleExecutable</key><string>Advisor</string>
+  <key>CFBundleIconFile</key><string>advisor.icns</string>
+  <key>NSHighResolutionCapable</key><true/>
+</dict></plist>
+PLISTEOF
+  printf 'APPL????' > "$APP_PATH/Contents/PkgInfo"
+  [ -f "$ICON_SRC" ] && cp "$ICON_SRC" "$APP_PATH/Contents/Resources/advisor.icns"
+  touch "$APP_PATH"
+
+  echo "$APP_PATH を作成しました（ダブルクリックで GUI が起動。ターミナルは開きません）。"
+  echo "  Dock やデスクトップにドラッグしておくと次回から一発です。"
 else
-  echo "osacompile が見つからないため Advisor.app の生成はスキップします。"
-  echo "ターミナルから 'advisor' と打てば起動します。"
+  echo "python3 が見つからないため Advisor.app の生成はスキップします。"
 fi
 echo ""
 
