@@ -75,6 +75,15 @@ class AdvisorGUI:
         self.root = root
         self.root.title("Advisor")
         self.root.geometry("760x600")
+        # Dock/ウィンドウのアイコン(できれば)。tkinter だけだと Dock は
+        # Python の絵のままのことがあるが、少なくとも試みる。
+        try:
+            png = os.path.expanduser("~/claude-build/advisor.png")
+            if os.path.isfile(png):
+                self._icon_img = tk.PhotoImage(file=png)
+                self.root.iconphoto(True, self._icon_img)
+        except Exception:
+            pass
 
         self.events = queue.Queue()
         self.proc = None
@@ -98,9 +107,17 @@ class AdvisorGUI:
         self.model_lbl = tk.Label(self.bar, textvariable=self.model_label_var)
         self.model_lbl.pack(side=tk.LEFT, padx=10, pady=6)
 
-        self.theme_btn = tk.Button(self.bar, text="見た目", relief=tk.FLAT,
-                                   command=self._toggle_theme)
+        # 見た目: プルダウン(各テーマをラジオ選択)
+        self.theme_btn = tk.Menubutton(self.bar, relief=tk.RAISED)
+        self.theme_menu = tk.Menu(self.theme_btn, tearoff=0)
+        self.theme_btn.config(menu=self.theme_menu)
+        self._theme_choice = tk.StringVar(value=self.theme_name)
+        for key, spec in THEMES.items():
+            self.theme_menu.add_radiobutton(
+                label=spec["label"], value=key, variable=self._theme_choice,
+                command=lambda k=key: self._choose_theme(k))
         self.theme_btn.pack(side=tk.RIGHT, padx=6, pady=4)
+
         self.switch_btn = tk.Menubutton(self.bar, text="AIを切替", relief=tk.RAISED)
         self.switch_menu = tk.Menu(self.switch_btn, tearoff=0)
         self.switch_btn.config(menu=self.switch_menu)
@@ -167,13 +184,14 @@ class AdvisorGUI:
         # 区切り線は逆に、会話より外側(左右)まで長めに引く
         self.note.tag_config("rule", foreground=t["dim"], justify=tk.CENTER,
                              font=(f[0], max(8, f[1] - 3)), spacing1=6, spacing3=6)
-        self.theme_btn.config(text="見た目: " + t["label"])
+        self.theme_btn.config(text="見た目: " + t["label"] + " ▾")
 
-    def _toggle_theme(self):
-        order = list(THEMES.keys())
-        nxt = order[(order.index(self.theme_name) + 1) % len(order)]
-        self._apply_theme(nxt)
-        save_cfg({"theme": nxt})
+    def _choose_theme(self, key):
+        if key not in THEMES:
+            return
+        self._theme_choice.set(key)
+        self._apply_theme(key)
+        save_cfg({"theme": key})
 
     def _block_sep(self):
         """発言の切れ目に薄いヨコ線。先頭の発言では入れない。"""

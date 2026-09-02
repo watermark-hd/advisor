@@ -151,6 +151,7 @@ mkdir -p "$BUILD_DIR"
 cp "$SCRIPT_DIR/agent/claude-agent.pl" "$BUILD_DIR/claude-agent.pl"
 cp "$SCRIPT_DIR/models.txt" "$BUILD_DIR/models.txt"
 [ -f "$SCRIPT_DIR/gui/advisor_gui.py" ] && cp "$SCRIPT_DIR/gui/advisor_gui.py" "$BUILD_DIR/advisor_gui.py"
+[ -f "$SCRIPT_DIR/launcher/advisor.png" ] && cp "$SCRIPT_DIR/launcher/advisor.png" "$BUILD_DIR/advisor.png"
 echo "$BUILD_DIR に claude-agent.pl / models.txt / advisor_gui.py を配置しました。"
 
 # --- 4. advisor コマンド(ラッパー)の設置 ---
