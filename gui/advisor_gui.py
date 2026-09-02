@@ -25,25 +25,50 @@ from tkinter import messagebox
 
 CFG_PATH = os.path.expanduser("~/.claude-agent/gui.json")
 
-# テーマ定義。fg=自分の字, ai=相手の字, dim=補足(道具/お知らせ), err=エラー。
+# テーマ定義。
+#   layout "chat" = LINE 向き(相手=左 / 自分=右)、間に区切り線。ノート向け。
+#   layout "flow" = 端末風に上から流す。自分の発言に色付き「watermark> 」。
+#   handwriting   = 手書き風フォントが入っていれば使う(環境依存)。
+#   holes         = 左にルーズリーフの穴。
 THEMES = {
     "paper": {
-        "label": "ノート",
-        "bg": "#faf7ef", "fg": "#2b2b2b", "ai": "#1f3b57",
-        "dim": "#8a8578", "err": "#a5341f", "rule": "#c9b98f",
-        "input_bg": "#fffdf6", "input_fg": "#2b2b2b",
-        "bar_bg": "#efe9db", "bar_fg": "#5a5343",
-        "font": ("Hiragino Sans", 14), "mono": False,
+        "label": "ノート", "layout": "chat", "handwriting": True, "holes": True,
+        "bg": "#f6efdc", "fg": "#243b6b", "ai": "#5a4636",   # 青黒インク / 茶
+        "dim": "#9a8f78", "err": "#a5341f", "rule": "#c7b58a", "code_bg": "#efe6cf",
+        "input_bg": "#fffdf3", "input_fg": "#243b6b",
+        "font": ("Hiragino Maru Gothic ProN", 15), "mono": False,
+    },
+    "coding": {
+        "label": "コーディング", "layout": "flow",
+        "bg": "#1e1e1e", "fg": "#d4d4d4", "ai": "#d4d4d4", "prompt": "#c586c0",
+        "dim": "#7a7a7a", "err": "#f48771", "rule": "#333333", "code_bg": "#252526",
+        "input_bg": "#252526", "input_fg": "#d4d4d4",
+        "font": ("Menlo", 13), "mono": True,
     },
     "hacker": {
-        "label": "ハッカー",
-        "bg": "#000000", "fg": "#39ff5a", "ai": "#26c2a0",
-        "dim": "#2e7d4f", "err": "#ff5555", "rule": "#39ff5a",
-        "input_bg": "#050805", "input_fg": "#39ff5a",
-        "bar_bg": "#0a0f0a", "bar_fg": "#2e7d4f",
+        "label": "ハッカー", "layout": "flow",
+        "bg": "#000000", "fg": "#39ff5a", "ai": "#39ff5a", "prompt": "#00e5ff",
+        "dim": "#2e7d4f", "err": "#ff5555", "rule": "#1c4d2e", "code_bg": "#041004",
+        "input_bg": "#040804", "input_fg": "#39ff5a",
         "font": ("Menlo", 13), "mono": True,
     },
 }
+
+
+def pick_font(family, size):
+    """指定 family が無ければ順に代替。手書き風は入っていれば拾う。"""
+    try:
+        import tkinter.font as tkfont
+        have = set(tkfont.families())
+    except Exception:
+        return (family, size)
+    cands = [family,
+             "Hiragino Maru Gothic ProN", "YuKyokasho", "Klee",
+             "Chalkboard SE", "Hiragino Sans", "ヒラギノ角ゴシック"]
+    for c in cands:
+        if c in have:
+            return (c, size)
+    return (family, size)
 
 
 def find_advisor():
@@ -123,6 +148,10 @@ class AdvisorGUI:
         self.switch_btn.config(menu=self.switch_menu)
         self.switch_btn.pack(side=tk.RIGHT, padx=6, pady=4)
 
+        # ヘッダー(gemini / ノート 等)の下の太線。ノートのタイトル罫のように。
+        self.hdr_rule = tk.Frame(self.root, height=3)
+        self.hdr_rule.pack(side=tk.TOP, fill=tk.X)
+
         # 下から順に固定で確保する(こうしないと会話欄が伸びて入力欄が
         # 画面外に押し出される)。ステータス → 入力欄 → の順に BOTTOM 詰め。
         self.status_lbl = tk.Label(self.root, textvariable=self.status_var, anchor=tk.W)
@@ -141,6 +170,10 @@ class AdvisorGUI:
         # 会話ノート(残りの領域いっぱい)
         mid = tk.Frame(self.root)
         mid.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        # 左: ルーズリーフの穴(ノートモードだけ表示)
+        self.holes = tk.Canvas(mid, width=34, highlightthickness=0)
+        self.holes.pack(side=tk.LEFT, fill=tk.Y)
+        self.holes.bind("<Configure>", lambda e: self._draw_holes())
         self.note = tk.Text(mid, wrap=tk.WORD, state=tk.DISABLED, height=1,
                             padx=18, pady=14, relief=tk.FLAT,
                             highlightthickness=0, spacing2=2)
@@ -149,42 +182,86 @@ class AdvisorGUI:
         sb.pack(side=tk.RIGHT, fill=tk.Y)
         self.note.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
+    def _draw_holes(self):
+        self.holes.delete("all")
+        t = THEMES[self.theme_name]
+        if not t.get("holes"):
+            self.holes.config(width=1, bg=t["bg"])
+            return
+        self.holes.config(width=34, bg=t["bg"])
+        h = self.holes.winfo_height() or 600
+        y = 40
+        while y < h:
+            self.holes.create_oval(9, y - 9, 27, y + 9, fill=t["input_bg"],
+                                   outline=t["dim"])
+            y += 62
+
     def _apply_theme(self, name):
         t = THEMES[name]
         self.theme_name = name
-        f = t["font"]
+        self.layout = t.get("layout", "chat")
+        f = pick_font(*t["font"]) if t.get("handwriting") else t["font"]
+        self.font = f
+        code_f = ("Menlo", f[1] - 1)
+
+        # ノート = ヘッダーも本文と同色。端末系 = 少し沈めた色。
+        bar_bg = t["bg"] if self.layout == "chat" else t.get("code_bg", t["bg"])
         self.root.config(bg=t["bg"])
         for w in (self.bar, self.inbar):
-            w.config(bg=t["bar_bg"])
-        self.model_lbl.config(bg=t["bar_bg"], fg=t["bar_fg"])
-        self.status_lbl.config(bg=t["bar_bg"], fg=t["bar_fg"], font=(f[0], 10))
+            w.config(bg=bar_bg)
+        self.model_lbl.config(bg=bar_bg, fg=t["dim"], font=(f[0], f[1] - 2))
+        self.status_lbl.config(bg=bar_bg, fg=t["dim"], font=(f[0], 10))
         for b in (self.theme_btn, self.switch_btn):
-            b.config(bg=t["bar_bg"], fg=t["bar_fg"],
-                     activebackground=t["bar_bg"], highlightbackground=t["bar_bg"])
-        self.note.config(bg=t["bg"], fg=t["fg"], font=f,
-                         insertbackground=t["fg"])
+            b.config(bg=bar_bg, fg=t["dim"], activebackground=bar_bg,
+                     highlightbackground=bar_bg)
+        self.hdr_rule.config(bg=t["dim"])                  # ヘッダー下の太線
+        self.note.config(bg=t["bg"], fg=t["fg"], font=f, insertbackground=t["fg"])
         self.entry.config(bg=t["input_bg"], fg=t["input_fg"], font=f,
                           insertbackground=t["input_fg"],
-                          highlightbackground=t["bar_bg"],
-                          highlightcolor=t["dim"])
-        # LINE と同じ向き: 相手(AI)は左、自分は右。ただし端に寄せすぎず、
-        # 両側とも中央寄りから始める(外側に余白 pad を残す)。名前ラベルなし。
-        pad = f[1] * 5
-        self.note.tag_config("ai", foreground=t["ai"],
-                             lmargin1=pad, lmargin2=pad, rmargin=pad,
-                             spacing1=2, spacing3=2)
-        self.note.tag_config("you", foreground=t["fg"], justify=tk.RIGHT,
-                             lmargin1=pad, lmargin2=pad, rmargin=pad,
-                             spacing1=2, spacing3=2)
-        self.note.tag_config("dim", foreground=t["dim"],
-                             lmargin1=pad, lmargin2=pad, spacing1=2,
-                             font=(f[0], f[1] - 2))
-        self.note.tag_config("err", foreground=t["err"],
-                             lmargin1=pad, lmargin2=pad, spacing1=2)
-        # 区切り線は逆に、会話より外側(左右)まで長めに引く
-        self.note.tag_config("rule", foreground=t.get("rule", t["dim"]),
-                             justify=tk.CENTER, font=(f[0], max(10, f[1] - 1)),
-                             spacing1=8, spacing3=8)
+                          highlightbackground=bar_bg, highlightcolor=t["dim"])
+        self._draw_holes()
+
+        # tag_delete せず全オプションを毎回明示して上書きする(既存テキストの
+        # 書式が消えないように)。chat と flow で justify/rmargin を切り替える。
+        if self.layout == "chat":
+            pad = f[1] * 5                                   # LINE 向き・中央寄り
+            self.note.tag_config("ai", foreground=t["ai"], justify=tk.LEFT,
+                                 lmargin1=pad, lmargin2=pad, rmargin=pad,
+                                 spacing1=2, spacing3=2)
+            self.note.tag_config("you", foreground=t["fg"], justify=tk.RIGHT,
+                                 lmargin1=pad, lmargin2=pad, rmargin=pad,
+                                 spacing1=2, spacing3=2)
+            self.note.tag_config("prompt", foreground=t["fg"])
+            self.note.tag_config("dim", foreground=t["dim"], justify=tk.LEFT,
+                                 lmargin1=pad, lmargin2=pad, rmargin=pad,
+                                 spacing1=2, spacing3=0, font=(f[0], f[1] - 2))
+            self.note.tag_config("err", foreground=t["err"], justify=tk.LEFT,
+                                 lmargin1=pad, lmargin2=pad, rmargin=pad, spacing1=2)
+            self.note.tag_config("rule", foreground=t.get("rule", t["dim"]),
+                                 justify=tk.CENTER, lmargin1=0, lmargin2=0, rmargin=0,
+                                 font=(f[0], max(10, f[1] - 1)),
+                                 spacing1=8, spacing3=8)
+        else:
+            lm = f[1] * 2                                    # 端末風・左そろえ・流し
+            self.note.tag_config("ai", foreground=t["ai"], justify=tk.LEFT,
+                                 lmargin1=lm, lmargin2=lm, rmargin=0,
+                                 spacing1=0, spacing3=0)
+            self.note.tag_config("you", foreground=t["fg"], justify=tk.LEFT,
+                                 lmargin1=lm, lmargin2=lm, rmargin=0,
+                                 spacing1=0, spacing3=0)
+            self.note.tag_config("prompt", foreground=t.get("prompt", t["ai"]),
+                                 justify=tk.LEFT, lmargin1=lm, lmargin2=lm, rmargin=0,
+                                 font=(f[0], f[1], "bold"))
+            self.note.tag_config("dim", foreground=t["dim"], justify=tk.LEFT,
+                                 lmargin1=lm, lmargin2=lm, rmargin=0,
+                                 spacing1=0, spacing3=0, font=(f[0], f[1] - 2))
+            self.note.tag_config("err", foreground=t["err"], justify=tk.LEFT,
+                                 lmargin1=lm, lmargin2=lm, rmargin=0, spacing1=0)
+            self.note.tag_config("rule", foreground=t["bg"], justify=tk.LEFT,
+                                 lmargin1=0, lmargin2=0, rmargin=0, font=(f[0], 4),
+                                 spacing1=0, spacing3=0)
+        self.note.tag_config("code", font=code_f, background=t.get("code_bg", t["bg"]),
+                             lmargin1=f[1] * 3, lmargin2=f[1] * 3)
         self.theme_btn.config(text="見た目: " + t["label"] + " ▾")
 
     def _choose_theme(self, key):
@@ -195,15 +272,21 @@ class AdvisorGUI:
         save_cfg({"theme": key})
 
     def _block_sep(self):
-        """発言の切れ目に薄いヨコ線。先頭の発言では入れない。"""
-        if self.note.index("end-1c") != "1.0":
+        """発言の切れ目。chat=薄いヨコ線 / flow=空行。先頭では入れない。"""
+        if self.note.index("end-1c") == "1.0":
+            return
+        if self.layout == "chat":
             self.note.insert(tk.END, "\n" + "─" * 40 + "\n", "rule")
+        else:
+            self.note.insert(tk.END, "\n\n", "rule")
 
     def _append(self, text, tag, anchor=False):
         """1ブロックを一気に書く(自分の発言・お知らせ・エラー用)。"""
         self.note.config(state=tk.NORMAL)
         self._block_sep()
         start = self.note.index("end-1c")
+        if tag == "you" and self.layout != "chat":
+            self.note.insert(tk.END, "watermark> ", "prompt")   # 端末風プロンプト
         self.note.insert(tk.END, text.rstrip("\n") + "\n", tag)
         if anchor:
             # 自分の発言の先頭に印。返答が来たらここを画面の一番上に置く
