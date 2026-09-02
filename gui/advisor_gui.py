@@ -175,15 +175,53 @@ class AdvisorGUI:
         self._apply_theme(nxt)
         save_cfg({"theme": nxt})
 
-    def _append(self, text, tag):
-        self.note.config(state=tk.NORMAL)
+    def _block_sep(self):
+        """発言の切れ目に薄いヨコ線。先頭の発言では入れない。"""
         if self.note.index("end-1c") != "1.0":
-            # 発言のあいだに薄いヨコ線の区切り。会話より外まで長めに。
             self.note.insert(tk.END, "\n" + "─" * 40 + "\n", "rule")
-        self.note.insert(tk.END, text.rstrip("\n"), tag)
-        self.note.insert(tk.END, "\n")
-        self.note.see(tk.END)
+
+    def _append(self, text, tag, anchor=False):
+        """1ブロックを一気に書く(自分の発言・お知らせ・エラー用)。"""
+        self.note.config(state=tk.NORMAL)
+        self._block_sep()
+        start = self.note.index("end-1c")
+        self.note.insert(tk.END, text.rstrip("\n") + "\n", tag)
+        if anchor:
+            # 自分の発言の先頭に印。返答が来たらここを画面の一番上に置く
+            # ことで、Enter を押した瞬間に自分の文が消える問題を防ぐ。
+            self.note.mark_set("q_anchor", start)
+            self.note.mark_gravity("q_anchor", "left")
         self.note.config(state=tk.DISABLED)
+
+    def _stream_append(self, text, tag):
+        """AIの返答を少しずつ流し込む(一瞬で入れ替わって読めない問題の対策)。
+        流し込み中は画面を下端に追従させず、直前の自分の発言を上に留める。"""
+        self.note.config(state=tk.NORMAL)
+        self._block_sep()
+        self.note.config(state=tk.DISABLED)
+        if self.note_has_anchor():
+            self.note.yview("q_anchor")           # 自分の質問を画面最上部へ
+        self._stream_step(list(text), tag)
+
+    def _stream_step(self, chars, tag):
+        if not chars:
+            self.note.config(state=tk.NORMAL)
+            self.note.insert(tk.END, "\n", tag)
+            self.note.config(state=tk.DISABLED)
+            return
+        chunk = "".join(chars[:24])
+        del chars[:24]
+        self.note.config(state=tk.NORMAL)
+        self.note.insert(tk.END, chunk, tag)
+        self.note.config(state=tk.DISABLED)
+        self.root.after(18, lambda: self._stream_step(chars, tag))
+
+    def note_has_anchor(self):
+        try:
+            self.note.index("q_anchor")
+            return True
+        except tk.TclError:
+            return False
 
     # ---------- バックエンド ----------
     def _start_backend(self):
@@ -243,7 +281,7 @@ class AdvisorGUI:
             self.status_var.set(f"準備完了（履歴: {hist}）")
             self._set_busy(False)
         elif t == "text":
-            self._append(str(obj.get("text", "")), "ai")
+            self._stream_append(str(obj.get("text", "")), "ai")
         elif t == "note":
             self._append(str(obj.get("text", "")), "dim")
         elif t == "error":
@@ -331,7 +369,8 @@ class AdvisorGUI:
         if not text:
             return
         self.entry.delete("1.0", tk.END)
-        self._append(text, "you")
+        self._append(text, "you", anchor=True)
+        self.note.yview("q_anchor")          # 送った自分の発言を画面の一番上へ
         self._set_busy(True)
         self.status_var.set("問い合わせ中…")
         self._write({"t": "user", "text": text})
