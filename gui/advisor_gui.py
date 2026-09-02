@@ -36,22 +36,23 @@ THEMES = {
     "paper": {
         "label": "ノート", "handwriting": True, "holes": True,
         "bg": "#f6efdc", "fg": "#243b6b", "ai": "#5a4636",   # 青黒インク / 茶
-        "dim": "#9a8f78", "err": "#a5341f", "rule": "#c7b58a", "code_bg": "#efe6cf",
-        "input_bg": "#fffdf3", "input_fg": "#243b6b",
+        "dim": "#9a8f78", "err": "#a5341f", "rule": "#d7b7ab", "code_bg": "#efe6cf",
+        "line": "#c96b63",                                    # 昔のルーズリーフの赤い罫
+        "input_bg": "#f6efdc", "input_fg": "#243b6b",
         "font": ("Hiragino Maru Gothic ProN", 15),
     },
     "coding": {
         "label": "コーディング", "prompt_prefix": True,
         "bg": "#1e1e1e", "fg": "#d4d4d4", "ai": "#cfcfcf", "prompt": "#c586c0",
         "dim": "#7a7a7a", "err": "#f48771", "rule": "#3a3a3a", "code_bg": "#252526",
-        "input_bg": "#252526", "input_fg": "#d4d4d4",
+        "line": "#3a3a3a", "input_bg": "#1e1e1e", "input_fg": "#d4d4d4",
         "font": ("Menlo", 13),
     },
     "hacker": {
         "label": "ハッカー", "prompt_prefix": True,
         "bg": "#000000", "fg": "#39ff5a", "ai": "#33dd88", "prompt": "#00e5ff",
         "dim": "#2e7d4f", "err": "#ff5555", "rule": "#2e9d55", "code_bg": "#041004",
-        "input_bg": "#040804", "input_fg": "#39ff5a",
+        "line": "#2e9d55", "input_bg": "#000000", "input_fg": "#39ff5a",
         "font": ("Menlo", 13),
     },
 }
@@ -150,19 +151,21 @@ class AdvisorGUI:
         self.switch_btn.config(menu=self.switch_menu)
         self.switch_btn.pack(side=tk.RIGHT, padx=6, pady=4)
 
-        # ヘッダー(gemini / ノート 等)の下の太線。ノートのタイトル罫のように。
-        self.hdr_rule = tk.Frame(self.root, height=3)
+        # ヘッダー(gemini / ノート 等)の下の細い罫線。
+        self.hdr_rule = tk.Frame(self.root, height=2)
         self.hdr_rule.pack(side=tk.TOP, fill=tk.X)
 
         # 下から順に固定で確保する(こうしないと会話欄が伸びて入力欄が
-        # 画面外に押し出される)。ステータス → 入力欄 → の順に BOTTOM 詰め。
+        # 画面外に押し出される)。ステータス → 入力欄 → 罫線 の順に BOTTOM 詰め。
         self.status_lbl = tk.Label(self.root, textvariable=self.status_var, anchor=tk.W)
         self.status_lbl.pack(side=tk.BOTTOM, fill=tk.X)
 
         self.inbar = tk.Frame(self.root)
         self.inbar.pack(side=tk.BOTTOM, fill=tk.X)
-        self.entry = tk.Text(self.inbar, height=4, wrap=tk.WORD,
-                             relief=tk.FLAT, highlightthickness=1, padx=8, pady=6)
+        self.in_rule = tk.Frame(self.root, height=2)          # 入力欄の上の罫線
+        self.in_rule.pack(side=tk.BOTTOM, fill=tk.X)
+        self.entry = tk.Text(self.inbar, height=4, wrap=tk.CHAR,
+                             relief=tk.FLAT, highlightthickness=0, padx=8, pady=6)
         self.entry.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(8, 4), pady=6)
         self.entry.bind("<Return>", self._on_return)
         self.send_btn = tk.Button(self.inbar, text="送信", width=6,
@@ -176,7 +179,7 @@ class AdvisorGUI:
         self.holes = tk.Canvas(mid, width=34, highlightthickness=0)
         self.holes.pack(side=tk.LEFT, fill=tk.Y)
         self.holes.bind("<Configure>", lambda e: self._draw_holes())
-        self.note = tk.Text(mid, wrap=tk.WORD, state=tk.DISABLED, height=1,
+        self.note = tk.Text(mid, wrap=tk.CHAR, state=tk.DISABLED, height=1,
                             padx=18, pady=14, relief=tk.FLAT,
                             highlightthickness=0, spacing2=2)
         sb = tk.Scrollbar(mid, command=self.note.yview)
@@ -217,11 +220,12 @@ class AdvisorGUI:
         for b in (self.theme_btn, self.switch_btn):
             b.config(bg=t["bg"], fg=t["dim"], activebackground=t["bg"],
                      highlightbackground=t["bg"])
-        self.hdr_rule.config(bg=t["dim"])                   # ヘッダー下の太線
+        line = t.get("line", t["dim"])
+        self.hdr_rule.config(bg=line)                       # ヘッダー下の罫線
+        self.in_rule.config(bg=line)                        # 入力欄の上の罫線
         self.note.config(bg=t["bg"], fg=t["fg"], font=f, insertbackground=t["fg"])
-        self.entry.config(bg=t["input_bg"], fg=t["input_fg"], font=f,
-                          insertbackground=t["input_fg"],
-                          highlightbackground=t["bg"], highlightcolor=t["dim"])
+        self.entry.config(bg=t["bg"], fg=t["input_fg"], font=f,
+                          insertbackground=t["input_fg"])
         self._draw_holes()
 
         # 色・書体・寄せだけ。左右の余白(1/3)は _relayout が幅から計算する。
