@@ -136,8 +136,12 @@ class AdvisorGUI:
         self.events = queue.Queue()
         self.proc = None
         self.busy = False
+        self.pane = "chat"                      # "chat" / "cmd"
+        self.cwd = os.path.expanduser("~")      # コマンドパネルの現在地
+        self.cmd_proc = None
         self.model_label_var = tk.StringVar(value="…")
         self.status_var = tk.StringVar(value="起動中…")
+        self.cmd_prompt_var = tk.StringVar(value="")
         self.theme_name = load_cfg().get("theme", "paper")
         if self.theme_name not in THEMES:
             self.theme_name = "paper"
@@ -152,6 +156,15 @@ class AdvisorGUI:
     def _build_ui(self):
         self.bar = tk.Frame(self.root)
         self.bar.pack(fill=tk.X)
+
+        # 会話 / コマンド の切り替えボタン
+        self.tab_chat = tk.Button(self.bar, text="会話", relief=tk.SUNKEN,
+                                  command=lambda: self._show_pane("chat"))
+        self.tab_chat.pack(side=tk.LEFT, padx=(10, 2), pady=6)
+        self.tab_cmd = tk.Button(self.bar, text="コマンド", relief=tk.RAISED,
+                                 command=lambda: self._show_pane("cmd"))
+        self.tab_cmd.pack(side=tk.LEFT, padx=2, pady=6)
+
         self.model_lbl = tk.Label(self.bar, textvariable=self.model_label_var)
         self.model_lbl.pack(side=tk.LEFT, padx=10, pady=6)
 
@@ -171,18 +184,20 @@ class AdvisorGUI:
         self.switch_btn.config(menu=self.switch_menu)
         self.switch_btn.pack(side=tk.RIGHT, padx=6, pady=4)
 
-        # ヘッダー(gemini / ノート 等)の下の細い罫線。左右を少し空ける。
+        # ヘッダー下の細い罫線(共通)。
         self.hdr_rule = tk.Frame(self.root, height=2)
         self.hdr_rule.pack(side=tk.TOP, fill=tk.X, padx=56)
 
-        # 下から順に固定で確保する(こうしないと会話欄が伸びて入力欄が
-        # 画面外に押し出される)。ステータス → 入力欄 → 罫線 の順に BOTTOM 詰め。
-        self.status_lbl = tk.Label(self.root, textvariable=self.status_var, anchor=tk.W)
-        self.status_lbl.pack(side=tk.BOTTOM, fill=tk.X)
+        # ================= 会話ペイン =================
+        self.chat_pane = tk.Frame(self.root)
+        self.chat_pane.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
-        self.inbar = tk.Frame(self.root)
+        self.status_lbl = tk.Label(self.chat_pane, textvariable=self.status_var,
+                                   anchor=tk.W)
+        self.status_lbl.pack(side=tk.BOTTOM, fill=tk.X)
+        self.inbar = tk.Frame(self.chat_pane)
         self.inbar.pack(side=tk.BOTTOM, fill=tk.X)
-        self.in_rule = tk.Frame(self.root, height=2)          # 入力欄の上の罫線
+        self.in_rule = tk.Frame(self.chat_pane, height=2)
         self.in_rule.pack(side=tk.BOTTOM, fill=tk.X, padx=56)
         self.entry = tk.Text(self.inbar, height=3, wrap=tk.CHAR,
                              relief=tk.FLAT, highlightthickness=0, padx=8, pady=6)
@@ -192,10 +207,8 @@ class AdvisorGUI:
                                   command=self._send_current)
         self.send_btn.pack(side=tk.LEFT, padx=(0, 8), pady=6)
 
-        # 会話ノート(残りの領域いっぱい)
-        mid = tk.Frame(self.root)
+        mid = tk.Frame(self.chat_pane)
         mid.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-        # 左: ルーズリーフの穴(ノートモードだけ表示)
         self.holes = tk.Canvas(mid, width=34, highlightthickness=0)
         self.holes.pack(side=tk.LEFT, fill=tk.Y)
         self.holes.bind("<Configure>", lambda e: self._draw_holes())
@@ -206,7 +219,135 @@ class AdvisorGUI:
         self.note.config(yscrollcommand=sb.set)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
         self.note.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.note.bind("<Configure>", self._relayout)   # 幅が変わったら余白を再計算
+        self.note.bind("<Configure>", self._relayout)
+
+        # ================= コマンドペイン =================
+        # 見た目はテーマに関係なく端末風(黒地)で固定。scp/ssh 用。
+        CB, CF, CIN, CERR, CDIM = "#0f1115", "#d6d6d6", "#4ec9e6", "#ff6b6b", "#7a8088"
+        self.cmd_pane = tk.Frame(self.root, bg=CB)          # 最初は非表示
+        self.cmd_row = tk.Frame(self.cmd_pane, bg=CB)
+        self.cmd_row.pack(side=tk.BOTTOM, fill=tk.X)
+        self.cmd_prompt = tk.Label(self.cmd_row, textvariable=self.cmd_prompt_var,
+                                   anchor=tk.W, bg=CB, fg=CIN)
+        self.cmd_prompt.pack(side=tk.LEFT, padx=(10, 2), pady=6)
+        self.cmd_stop_btn = tk.Button(self.cmd_row, text="中止", width=5,
+                                      state=tk.DISABLED, command=self._cmd_stop)
+        self.cmd_stop_btn.pack(side=tk.RIGHT, padx=(2, 8), pady=6)
+        self.cmd_entry = tk.Entry(self.cmd_row, relief=tk.FLAT, bg="#1a1d22",
+                                  fg=CF, insertbackground=CF)
+        self.cmd_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4), pady=6)
+        self.cmd_entry.bind("<Return>", lambda e: self._cmd_submit())
+        cmid = tk.Frame(self.cmd_pane, bg=CB)
+        cmid.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self.cmd_out = tk.Text(cmid, wrap=tk.CHAR, state=tk.DISABLED, bg=CB, fg=CF,
+                               padx=10, pady=8, relief=tk.FLAT, highlightthickness=0)
+        self.cmd_out.tag_config("cin", foreground=CIN)
+        self.cmd_out.tag_config("cerr", foreground=CERR)
+        self.cmd_out.tag_config("cdim", foreground=CDIM)
+        csb = tk.Scrollbar(cmid, command=self.cmd_out.yview)
+        self.cmd_out.config(yscrollcommand=csb.set)
+        csb.pack(side=tk.RIGHT, fill=tk.Y)
+        self.cmd_out.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self._cmd_refresh_prompt()
+
+    def _show_pane(self, name):
+        self.pane = name
+        if name == "cmd":
+            self.chat_pane.pack_forget()
+            self.cmd_pane.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+            self.tab_cmd.config(relief=tk.SUNKEN)
+            self.tab_chat.config(relief=tk.RAISED)
+            self._cmd_refresh_prompt()
+            self.cmd_entry.focus_set()
+        else:
+            self.cmd_pane.pack_forget()
+            self.chat_pane.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+            self.tab_chat.config(relief=tk.SUNKEN)
+            self.tab_cmd.config(relief=tk.RAISED)
+
+    # ---------- コマンドパネル ----------
+    def _cmd_env(self):
+        env = dict(os.environ)
+        env["PATH"] = (os.path.expanduser("~/bin") +
+                       ":/usr/local/bin:/usr/local/sbin:/opt/homebrew/bin"
+                       ":/opt/homebrew/sbin"
+                       ":/Library/Frameworks/Python.framework/Versions/3.10/bin"
+                       ":/usr/bin:/bin:/usr/sbin:/sbin")
+        env["TERM"] = "dumb"
+        return env
+
+    def _cmd_refresh_prompt(self):
+        home = os.path.expanduser("~")
+        d = self.cwd
+        if d == home:
+            d = "~"
+        elif d.startswith(home + os.sep):
+            d = "~" + d[len(home):]
+        self.cmd_prompt_var.set("watermark:%s$" % d)
+
+    def _cmd_echo(self, text, tag=None):
+        self.cmd_out.config(state=tk.NORMAL)
+        self.cmd_out.insert(tk.END, text, (tag,) if tag else ())
+        self.cmd_out.see(tk.END)
+        self.cmd_out.config(state=tk.DISABLED)
+
+    def _cmd_set_running(self, on):
+        self.cmd_stop_btn.config(state=tk.NORMAL if on else tk.DISABLED)
+        self.cmd_entry.config(state=tk.DISABLED if on else tk.NORMAL)
+        if not on:
+            self.cmd_entry.focus_set()
+
+    def _cmd_submit(self):
+        if self.cmd_proc is not None:
+            return
+        cmd = self.cmd_entry.get().strip()
+        if not cmd:
+            return
+        self.cmd_entry.delete(0, tk.END)
+        self._cmd_echo(self.cmd_prompt_var.get() + " " + cmd + "\n", "cin")
+
+        if cmd in ("clear", "cls"):
+            self.cmd_out.config(state=tk.NORMAL)
+            self.cmd_out.delete("1.0", tk.END)
+            self.cmd_out.config(state=tk.DISABLED)
+            return
+        if cmd == "cd" or cmd.startswith(("cd ", "cd\t")):
+            target = os.path.expanduser(cmd[2:].strip() or "~")
+            if not os.path.isabs(target):
+                target = os.path.normpath(os.path.join(self.cwd, target))
+            if os.path.isdir(target):
+                self.cwd = target
+                self._cmd_refresh_prompt()
+                self._write({"t": "cwd", "path": self.cwd})   # AI のツールにも反映
+            else:
+                self._cmd_echo("cd: そのフォルダはありません: %s\n" % target, "cerr")
+            return
+
+        self._cmd_set_running(True)
+        threading.Thread(target=self._cmd_run, args=(cmd,), daemon=True).start()
+
+    def _cmd_run(self, cmd):
+        try:
+            p = subprocess.Popen(cmd, shell=True, cwd=self.cwd, env=self._cmd_env(),
+                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                 text=True, bufsize=1, encoding="utf-8",
+                                 errors="replace")
+        except Exception as e:
+            self.events.put({"t": "cmd_out", "text": "実行できません: %s\n" % e})
+            self.events.put({"t": "cmd_done", "code": -1})
+            return
+        self.cmd_proc = p
+        for line in p.stdout:
+            self.events.put({"t": "cmd_out", "text": line})
+        p.wait()
+        self.events.put({"t": "cmd_done", "code": p.returncode})
+
+    def _cmd_stop(self):
+        if self.cmd_proc is not None:
+            try:
+                self.cmd_proc.terminate()
+            except Exception:
+                pass
 
     def _draw_holes(self):
         self.holes.delete("all")
@@ -237,9 +378,12 @@ class AdvisorGUI:
             w.config(bg=t["bg"])                            # ヘッダーも本文と同色
         self.model_lbl.config(bg=t["bg"], fg=t["dim"], font=(f[0], f[1] - 2))
         self.status_lbl.config(bg=t["bg"], fg=t["dim"], font=(f[0], 10))
-        for b in (self.theme_btn, self.switch_btn):
+        for b in (self.theme_btn, self.switch_btn, self.tab_chat, self.tab_cmd):
             b.config(bg=t["bg"], fg=t["dim"], activebackground=t["bg"],
                      highlightbackground=t["bg"])
+        self.cmd_out.config(font=code_f)
+        self.cmd_entry.config(font=code_f)
+        self.cmd_prompt.config(font=code_f)
         line = t.get("line", t["dim"])
         self.hdr_rule.config(bg=line)                       # ヘッダー下の罫線
         self.in_rule.config(bg=line)                        # 入力欄の上の罫線
@@ -459,6 +603,13 @@ class AdvisorGUI:
         elif t == "turn_done":
             self._set_busy(False)
             self.status_var.set("")
+        elif t == "cmd_out":
+            self._cmd_echo(str(obj.get("text", "")))
+        elif t == "cmd_done":
+            rc = obj.get("code", 0)
+            self._cmd_echo("[終了 %s]\n" % rc, "cerr" if rc else "cdim")
+            self.cmd_proc = None
+            self._cmd_set_running(False)
         elif t == "bye":
             self.status_var.set("advisor を終了しました")
             self._set_busy(True)
@@ -537,11 +688,12 @@ class AdvisorGUI:
             self._write({"t": "quit"})
         except Exception:
             pass
-        if self.proc and self.proc.poll() is None:
-            try:
-                self.proc.terminate()
-            except Exception:
-                pass
+        for p in (self.proc, self.cmd_proc):
+            if p and p.poll() is None:
+                try:
+                    p.terminate()
+                except Exception:
+                    pass
         self.root.destroy()
 
 

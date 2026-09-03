@@ -1659,6 +1659,12 @@ if ($GUI) {
         last unless defined $req;                       # GUI が閉じた = EOF
         my $type = $req->{t} || '';
         last if $type eq 'quit';
+        if ($type eq 'cwd') {
+            # GUI のコマンドパネルで cd した先を、AI のツールにも反映する。
+            my $p = $req->{path};
+            if (defined $p && $p ne '' && -d $p) { chdir($p); dbg("cwd -> $p"); }
+            next;
+        }
         next unless $type eq 'user';
         my $text = defined $req->{text} ? $req->{text} : '';
         next if $text eq '';
