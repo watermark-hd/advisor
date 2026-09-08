@@ -237,6 +237,11 @@ class AdvisorGUI:
                                   fg=CF, insertbackground=CF)
         self.cmd_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4), pady=6)
         self.cmd_entry.bind("<Return>", lambda e: self._cmd_submit())
+        self.cmd_entry.bind("<Up>", self._cmd_hist_prev)
+        self.cmd_entry.bind("<Down>", self._cmd_hist_next)
+        self.cmd_entry.bind("<Control-c>", lambda e: (self._cmd_stop(), "break")[1])
+        self.cmd_hist = []          # コマンド履歴(このセッション限り)
+        self.cmd_hist_idx = None
         cmid = tk.Frame(self.cmd_pane, bg=CB)
         cmid.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self.cmd_out = tk.Text(cmid, wrap=tk.CHAR, state=tk.DISABLED, bg=CB, fg=CF,
@@ -304,6 +309,9 @@ class AdvisorGUI:
         if not cmd:
             return
         self.cmd_entry.delete(0, tk.END)
+        if not self.cmd_hist or self.cmd_hist[-1] != cmd:
+            self.cmd_hist.append(cmd)
+        self.cmd_hist_idx = None
         self._cmd_echo(self.cmd_prompt_var.get() + " " + cmd + "\n", "cin")
 
         if cmd in ("clear", "cls"):
@@ -348,6 +356,28 @@ class AdvisorGUI:
                 self.cmd_proc.terminate()
             except Exception:
                 pass
+
+    def _cmd_hist_prev(self, _e=None):
+        if not self.cmd_hist:
+            return "break"
+        if self.cmd_hist_idx is None:
+            self.cmd_hist_idx = len(self.cmd_hist) - 1
+        elif self.cmd_hist_idx > 0:
+            self.cmd_hist_idx -= 1
+        self.cmd_entry.delete(0, tk.END)
+        self.cmd_entry.insert(0, self.cmd_hist[self.cmd_hist_idx])
+        return "break"
+
+    def _cmd_hist_next(self, _e=None):
+        if self.cmd_hist_idx is None:
+            return "break"
+        self.cmd_hist_idx += 1
+        self.cmd_entry.delete(0, tk.END)
+        if self.cmd_hist_idx >= len(self.cmd_hist):
+            self.cmd_hist_idx = None            # 最新より下 = 空に
+        else:
+            self.cmd_entry.insert(0, self.cmd_hist[self.cmd_hist_idx])
+        return "break"
 
     def _draw_holes(self):
         self.holes.delete("all")
