@@ -19,6 +19,7 @@ import json
 import os
 import queue
 import re
+import signal
 import subprocess
 import threading
 import tkinter as tk
@@ -297,13 +298,14 @@ class AdvisorGUI:
         self.cmd_out.config(state=tk.DISABLED)
 
     def _cmd_set_running(self, on):
+        # 入力欄は無効化しない(無効化すると Ctrl-C や ↑↓ のキー入力を
+        # 受け取れなくなるため)。二重実行は _cmd_submit のガードで防ぐ。
         self.cmd_stop_btn.config(state=tk.NORMAL if on else tk.DISABLED)
-        self.cmd_entry.config(state=tk.DISABLED if on else tk.NORMAL)
-        if not on:
-            self.cmd_entry.focus_set()
+        self.cmd_entry.focus_set()
 
     def _cmd_submit(self):
         if self.cmd_proc is not None:
+            self._cmd_echo("(実行中です。中止 ボタンか Ctrl-C で止めてください)\n", "cdim")
             return
         cmd = self.cmd_entry.get().strip()
         if not cmd:
@@ -336,10 +338,12 @@ class AdvisorGUI:
 
     def _cmd_run(self, cmd):
         try:
+            # 独立したプロセスグループで起動する。中止のとき、シェルだけでなく
+            # その子(ssh/scp 等)まで一括で止められるようにするため。
             p = subprocess.Popen(cmd, shell=True, cwd=self.cwd, env=self._cmd_env(),
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                  text=True, bufsize=1, encoding="utf-8",
-                                 errors="replace")
+                                 errors="replace", start_new_session=True)
         except Exception as e:
             self.events.put({"t": "cmd_out", "text": "実行できません: %s\n" % e})
             self.events.put({"t": "cmd_done", "code": -1})
@@ -351,11 +355,28 @@ class AdvisorGUI:
         self.events.put({"t": "cmd_done", "code": p.returncode})
 
     def _cmd_stop(self):
-        if self.cmd_proc is not None:
+        p = self.cmd_proc
+        if p is None:
+            return
+        try:
+            os.killpg(os.getpgid(p.pid), signal.SIGTERM)   # プロセスグループごと
+        except Exception:
             try:
-                self.cmd_proc.terminate()
+                p.terminate()
             except Exception:
                 pass
+        # まだ生きていたら少し待って強制終了
+        self.root.after(1500, lambda: self._cmd_kill(p))
+
+    def _cmd_kill(self, p):
+        if p is not None and p.poll() is None:
+            try:
+                os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+            except Exception:
+                try:
+                    p.kill()
+                except Exception:
+                    pass
 
     def _cmd_hist_prev(self, _e=None):
         if not self.cmd_hist:
