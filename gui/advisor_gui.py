@@ -177,7 +177,8 @@ class AdvisorGUI:
         self.model_lbl.pack(side=tk.LEFT, padx=10, pady=6)
 
         # 見た目: プルダウン(各テーマをラジオ選択)
-        self.theme_btn = tk.Menubutton(self.bar, relief=tk.RAISED)
+        self.theme_btn = tk.Menubutton(self.bar, relief=tk.RAISED, borderwidth=1,
+                                       padx=10, pady=3)
         self.theme_menu = tk.Menu(self.theme_btn, tearoff=0)
         self.theme_btn.config(menu=self.theme_menu)
         self._theme_choice = tk.StringVar(value=self.theme_name)
@@ -187,7 +188,9 @@ class AdvisorGUI:
                 command=lambda k=key: self._choose_theme(k))
         self.theme_btn.pack(side=tk.RIGHT, padx=6, pady=4)
 
-        self.switch_btn = tk.Menubutton(self.bar, text="AIを切替", relief=tk.RAISED)
+        self.switch_btn = tk.Menubutton(self.bar, text="AIを切替  ▾", relief=tk.RAISED,
+                                        borderwidth=1, padx=10, pady=3, width=9,
+                                        anchor=tk.W, indicatoron=False)
         self.switch_menu = tk.Menu(self.switch_btn, tearoff=0)
         self.switch_btn.config(menu=self.switch_menu)
         self.switch_btn.pack(side=tk.RIGHT, padx=6, pady=4)
@@ -213,7 +216,8 @@ class AdvisorGUI:
         self.in_rule.pack(side=tk.BOTTOM, fill=tk.X, padx=56)
         self.entry = tk.Text(self.inbar, height=3, wrap=tk.CHAR,
                              relief=tk.FLAT, highlightthickness=0, padx=8, pady=6)
-        self.entry.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(8, 4), pady=6)
+        # 書き込み欄の書き出しを、下の赤ラインの左端・解答の左端あたりに揃える
+        self.entry.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(48, 4), pady=6)
         self.entry.bind("<Return>", self._on_return)
         self.send_btn = tk.Button(self.inbar, text="送信", width=6,
                                   command=self._send_current)
@@ -272,15 +276,35 @@ class AdvisorGUI:
         if name == "cmd":
             self.chat_pane.pack_forget()
             self.cmd_pane.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-            self.tab_cmd.config(relief=tk.SUNKEN)
-            self.tab_chat.config(relief=tk.RAISED)
             self._cmd_refresh_prompt()
             self.cmd_entry.focus_set()
         else:
             self.cmd_pane.pack_forget()
             self.chat_pane.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-            self.tab_chat.config(relief=tk.SUNKEN)
-            self.tab_cmd.config(relief=tk.RAISED)
+        self._style_tabs()
+
+    def _style_tabs(self):
+        """ノートモードでは「会話」「コマンド」を手書き風＋青い下線に。
+        他モードでは今まで通りの押しボタン(選択中はへこむ)。"""
+        t = THEMES[self.theme_name]
+        active = getattr(self, "pane", "chat")
+        for name, btn in (("chat", self.tab_chat), ("cmd", self.tab_cmd)):
+            on = (name == active) or (name == "chat" and active not in ("chat", "cmd"))
+            if self.theme_name == "paper":
+                f = self.font
+                fnt = (f[0], f[1], "bold", "underline") if on \
+                    else (f[0], f[1], "underline")
+                btn.config(relief=tk.FLAT, bd=0, highlightthickness=0,
+                           overrelief=tk.FLAT, takefocus=0, font=fnt,
+                           fg=(t["fg"] if on else t["dim"]),
+                           bg=t["bg"], activebackground=t["bg"],
+                           activeforeground=t["fg"], highlightbackground=t["bg"])
+            else:
+                tf = t["font"]
+                btn.config(relief=(tk.SUNKEN if on else tk.RAISED), bd=2,
+                           overrelief=tk.RAISED, font=(tf[0], tf[1]),
+                           fg=t["dim"], bg=t["bg"], activebackground=t["bg"],
+                           activeforeground=t["dim"], highlightbackground=t["bg"])
 
     # ---------- コマンドパネル ----------
     def _cmd_env(self):
@@ -446,16 +470,14 @@ class AdvisorGUI:
         h = self.note.winfo_height()
         if h < 40:
             return
-        try:
-            lh = tkfont.Font(font=self.font).metrics("linespace") + 2
-        except Exception:
-            lh = self.font[1] + 10
+        pitch = getattr(self, "pitch", self.font[1] + 12)
         try:
             pad = int(str(self.note.cget("pady")) or 0)
         except ValueError:
             pad = 14
-        top = pad + lh - 3
-        need = max(0, (h - top) // lh + 1)
+        top = pad + getattr(self, "rule_off", pitch - 3)
+        need = max(0, int((h - top) // pitch) + 1)
+        lh = pitch
         while len(self._rule_lines) < need:
             self._rule_lines.append(
                 tk.Frame(self.note, height=1, bd=0, highlightthickness=0))
@@ -479,10 +501,10 @@ class AdvisorGUI:
             w.config(bg=t["bg"])                            # ヘッダーも本文と同色
         self.model_lbl.config(bg=t["bg"], fg=t["dim"], font=(f[0], f[1] - 2))
         self.status_lbl.config(bg=t["bg"], fg=t["dim"], font=(f[0], 10))
-        for b in (self.theme_btn, self.switch_btn, self.hist_btn,
-                  self.tab_chat, self.tab_cmd):
+        for b in (self.theme_btn, self.switch_btn, self.hist_btn):
             b.config(bg=t["bg"], fg=t["dim"], activebackground=t["bg"],
                      highlightbackground=t["bg"])
+        self._style_tabs()
         self.cmd_out.config(font=code_f)
         self.cmd_entry.config(font=code_f)
         self.cmd_prompt.config(font=code_f)
@@ -493,23 +515,35 @@ class AdvisorGUI:
         # 入力欄はモード間で高さを揃えるためフォントサイズを 13 で頭打ちに。
         self.entry.config(bg=t["bg"], fg=t["input_fg"], font=(f[0], min(f[1], 13)),
                           insertbackground=t["input_fg"])
+
+        # --- 行の縦リズムを一定に(横罫線に文字が乗るように) ---
+        # どの表示行も「文字高 + S」ぶんだけ進むように spacing を揃える。
+        # spacing1=0 / spacing2=spacing3=S にすると、折返し行も段落の切れ目も
+        # 等間隔になる。罫線はこの間隔で置くので、文字が毎行だいたい線に乗る。
+        try:
+            ls = tkfont.Font(font=f).metrics("linespace")
+        except Exception:
+            ls = int(f[1] * 1.5)
+        self._line_extra = max(7, int(round(ls * 0.42)))
+        S = self._line_extra
+        self.pitch = ls + S                       # 1行の送り幅(px)
+        self.rule_off = ls + int(round(S * 0.45)) # 1本目の罫線までの距離
+        self.note.config(spacing1=0, spacing2=S, spacing3=S)
         self._draw_holes()
 
         # 色・書体・寄せだけ。左右の余白(1/3)は _relayout が幅から計算する。
         # 自分の発言は「右側 2/3 のブロックに置く」が、文字は左そろえ。
         # (右寄せにすると2行目以降が右にばらけて読みにくい、との指摘)
-        self.note.tag_config("you", foreground=t["fg"], justify=tk.LEFT,
-                             spacing1=3, spacing3=3)
-        self.note.tag_config("ai", foreground=t["ai"], justify=tk.LEFT,
-                             spacing1=3, spacing3=3)
+        for tg, col in (("you", t["fg"]), ("ai", t["ai"]),
+                        ("dim", t["dim"]), ("err", t["err"]), ("gap", t["bg"])):
+            self.note.tag_config(tg, foreground=col, justify=tk.LEFT,
+                                 spacing1=0, spacing2=S, spacing3=S,
+                                 font=f)
         self.note.tag_config("prompt", foreground=t.get("prompt", t["fg"]),
                              justify=tk.LEFT, font=(f[0], f[1], "bold"))
-        self.note.tag_config("dim", foreground=t["dim"], justify=tk.LEFT,
-                             spacing1=3, font=(f[0], f[1] - 2))
-        self.note.tag_config("err", foreground=t["err"], justify=tk.LEFT, spacing1=3)
         self.note.tag_config("rule", foreground=t.get("rule", t["dim"]),
                              justify=tk.CENTER, lmargin1=0, lmargin2=0, rmargin=0,
-                             font=(f[0], max(10, f[1] - 1)), spacing1=8, spacing3=8)
+                             font=f, spacing1=0, spacing2=S, spacing3=S)
         self.note.tag_config("code", font=code_f, background=t.get("code_bg", t["bg"]),
                              lmargin1=f[1] * 3, lmargin2=f[1] * 3)
         hl = t.get("hl", {})
@@ -527,9 +561,13 @@ class AdvisorGUI:
             return
         third = int(w / 3)
         near = EDGE                      # 書き出しは赤い縦罫のすぐ右から
-        self.note.tag_config("you", lmargin1=third, lmargin2=third, rmargin=near)
+        ch = max(1, self.font[1])        # ざっくり全角1文字ぶん
+        # 質問ブロックを 4 文字ぶん左へ / 解答ブロックを 4 文字ぶん右へ広げる
+        you_left = max(near + 2 * ch, third - 4 * ch)
+        ai_right = max(2 * ch, third - 4 * ch)
+        self.note.tag_config("you", lmargin1=you_left, lmargin2=you_left, rmargin=near)
         for tag in ("ai", "dim", "err"):
-            self.note.tag_config(tag, lmargin1=near, lmargin2=near, rmargin=third)
+            self.note.tag_config(tag, lmargin1=near, lmargin2=near, rmargin=ai_right)
         self._draw_rules()
 
     def _choose_theme(self, key):
@@ -540,9 +578,10 @@ class AdvisorGUI:
         save_cfg({"theme": key})
 
     def _block_sep(self):
-        """発言の切れ目に薄いヨコ線(中央)。先頭では入れない。"""
+        """発言の切れ目に空の1行(罫線1本ぶん)。先頭では入れない。
+        大学ノートの「1行あけて書く」感じ。行の縦リズムも崩さない。"""
         if self.note.index("end-1c") != "1.0":
-            self.note.insert(tk.END, "\n" + "─" * 40 + "\n", "rule")
+            self.note.insert(tk.END, "\n", "gap")
 
     def _append(self, text, tag, anchor=False):
         """1ブロックを一気に書く(自分の発言・お知らせ・エラー用)。"""
