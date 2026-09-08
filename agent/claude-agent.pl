@@ -1125,6 +1125,38 @@ sub first_user_line {
     return '(発言なし)';
 }
 
+# 内部形式の会話を GUI で再描画するための {role, text} 配列に平す。
+#   role: you / ai / tool / toolresult
+sub flatten_history {
+    my ($msgs) = @_;
+    my @out;
+    for my $m (@$msgs) {
+        my $role = $m->{role} || '';
+        my $c = $m->{content};
+        if (!ref $c) {
+            push @out, { role => ($role eq 'assistant' ? 'ai' : 'you'), text => $c };
+            next;
+        }
+        for my $b (@{ $c || [] }) {
+            my $t = $b->{type} || '';
+            if ($t eq 'text') {
+                push @out, { role => 'ai', text => ($b->{text} // '') };
+            }
+            elsif ($t eq 'tool_use') {
+                push @out, { role => 'tool',
+                    text => ($b->{name} // 'tool') . '('
+                          . MiniJSON::encode($b->{input} // {}) . ')' };
+            }
+            elsif ($t eq 'tool_result') {
+                my $rc = $b->{content};
+                $rc = MiniJSON::encode($rc) if ref $rc;
+                push @out, { role => 'toolresult', text => ($rc // '') };
+            }
+        }
+    }
+    return \@out;
+}
+
 # ------------------------------------------------------------------
 # ツール定義とツール実行
 # ------------------------------------------------------------------
@@ -1663,6 +1695,36 @@ if ($GUI) {
             # GUI のコマンドパネルで cd した先を、AI のツールにも反映する。
             my $p = $req->{path};
             if (defined $p && $p ne '' && -d $p) { chdir($p); dbg("cwd -> $p"); }
+            next;
+        }
+        if ($type eq 'list_history') {
+            my @items;
+            if ($HISTORY_ENABLED) {
+                for my $f (history_files()) {
+                    my $raw = hist_decrypt("$HISTORY_DIR/$f");
+                    my $d = defined($raw) ? eval { MiniJSON::decode($raw) } : undef;
+                    next unless $d;
+                    push @items, { file => $f, started => ($d->{started} // $f),
+                                   first => first_user_line($d) };
+                }
+            }
+            gui_send({ t => 'history_list', items => \@items });
+            next;
+        }
+        if ($type eq 'resume') {
+            my $f = $req->{file} || '';
+            my $path = "$HISTORY_DIR/$f";
+            my $raw = ($HISTORY_ENABLED && -f $path) ? hist_decrypt($path) : undef;
+            my $d = defined($raw) ? eval { MiniJSON::decode($raw) } : undef;
+            if ($d && $d->{messages}) {
+                @messages = @{ $d->{messages} };
+                $SESSION_FILE = $path;                     # 同じファイルに続けて保存
+                gui_send({ t => 'history_loaded',
+                           count   => scalar(@messages),
+                           entries => flatten_history(\@messages) });
+            } else {
+                emit_error("その会話を読み込めませんでした。");
+            }
             next;
         }
         next unless $type eq 'user';

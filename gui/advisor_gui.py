@@ -185,6 +185,10 @@ class AdvisorGUI:
         self.switch_btn.config(menu=self.switch_menu)
         self.switch_btn.pack(side=tk.RIGHT, padx=6, pady=4)
 
+        self.hist_btn = tk.Button(self.bar, text="続きから", relief=tk.RAISED,
+                                  command=lambda: self._write({"t": "list_history"}))
+        self.hist_btn.pack(side=tk.RIGHT, padx=6, pady=4)
+
         # ヘッダー下の細い罫線(共通)。
         self.hdr_rule = tk.Frame(self.root, height=2)
         self.hdr_rule.pack(side=tk.TOP, fill=tk.X, padx=56)
@@ -429,7 +433,8 @@ class AdvisorGUI:
             w.config(bg=t["bg"])                            # ヘッダーも本文と同色
         self.model_lbl.config(bg=t["bg"], fg=t["dim"], font=(f[0], f[1] - 2))
         self.status_lbl.config(bg=t["bg"], fg=t["dim"], font=(f[0], 10))
-        for b in (self.theme_btn, self.switch_btn, self.tab_chat, self.tab_cmd):
+        for b in (self.theme_btn, self.switch_btn, self.hist_btn,
+                  self.tab_chat, self.tab_cmd):
             b.config(bg=t["bg"], fg=t["dim"], activebackground=t["bg"],
                      highlightbackground=t["bg"])
         self.cmd_out.config(font=code_f)
@@ -651,6 +656,10 @@ class AdvisorGUI:
             self._write({"t": "reply", "value": "y" if ok else "n"})
         elif t == "need_passphrase":
             self._ask_passphrase(obj.get("prompt", "パスフレーズ"))
+        elif t == "history_list":
+            self._show_history_dialog(obj.get("items", []))
+        elif t == "history_loaded":
+            self._render_history(obj.get("entries", []))
         elif t == "turn_done":
             self._set_busy(False)
             self.status_var.set("")
@@ -710,6 +719,63 @@ class AdvisorGUI:
         tk.Button(dlg, text="OK", command=done).pack(pady=(4, 14))
         dlg.protocol("WM_DELETE_WINDOW",
                      lambda: (self._write({"t": "passphrase", "value": ""}), dlg.destroy()))
+
+    # ---------- 続きから(過去の会話) ----------
+    def _show_history_dialog(self, items):
+        if not items:
+            messagebox.showinfo("続きから", "保存された会話がありません。")
+            return
+        dlg = tk.Toplevel(self.root)
+        dlg.title("続きから")
+        dlg.transient(self.root)
+        dlg.geometry("560x360")
+        tk.Label(dlg, text="続きから始める会話を選んでください").pack(padx=10, pady=(10, 2))
+        lb = tk.Listbox(dlg, font=("", 12), activestyle="dotbox")
+        lb.pack(fill=tk.BOTH, expand=True, padx=10, pady=4)
+        for it in items:
+            lb.insert(tk.END, "%s   %s" % (it.get("started", "?"), it.get("first", "")))
+        lb.selection_set(0)
+        lb.focus_set()
+
+        def choose(_=None):
+            sel = lb.curselection()
+            if sel:
+                self._write({"t": "resume", "file": items[sel[0]]["file"]})
+            dlg.destroy()
+
+        lb.bind("<Double-Button-1>", choose)
+        lb.bind("<Return>", choose)
+        btnf = tk.Frame(dlg)
+        btnf.pack(fill=tk.X, padx=10, pady=(0, 10))
+        tk.Button(btnf, text="開く", command=choose).pack(side=tk.RIGHT)
+        tk.Button(btnf, text="やめる", command=dlg.destroy).pack(side=tk.RIGHT, padx=(0, 6))
+
+    def _render_history(self, entries):
+        self.note.config(state=tk.NORMAL)
+        self.note.delete("1.0", tk.END)
+        self.note.config(state=tk.DISABLED)
+        try:
+            self.note.mark_unset("q_anchor")
+        except Exception:
+            pass
+        for e in entries:
+            role = e.get("role")
+            txt = str(e.get("text", ""))
+            if not txt.strip():
+                continue
+            if role == "you":
+                self._append(txt, "you")
+            elif role == "ai":
+                if "```" in txt:
+                    self._render_reply(txt)
+                else:
+                    self._append(txt, "ai")
+            elif role == "tool":
+                self._append("— " + txt + " —", "dim")
+            # toolresult はうるさいので再表示しない
+        self._append("（ここまで読み込みました。続きをどうぞ）", "dim")
+        self._show_pane("chat")
+        self.note.see(tk.END)
 
     def _set_busy(self, busy):
         self.busy = busy
