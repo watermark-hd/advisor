@@ -23,7 +23,12 @@ import signal
 import subprocess
 import threading
 import tkinter as tk
+from tkinter import font as tkfont
 from tkinter import messagebox
+
+# 本文の左インセット(px)。ノート左の赤い縦罫(大学ノートの余白線)の
+# すぐ右から書き始める、という要望に合わせた小さめの値。
+EDGE = 10
 
 CFG_PATH = os.path.expanduser("~/.claude-agent/gui.json")
 
@@ -56,6 +61,8 @@ THEMES = {
         "bg": "#f6efdc", "fg": "#243b6b", "ai": "#5a4636",   # 青黒インク / 茶
         "dim": "#9a8f78", "err": "#a5341f", "rule": "#d7b7ab", "code_bg": "#efe6cf",
         "line": "#c96b63",                                    # 昔のルーズリーフの赤い罫
+        "hline": "#9fb0c9",                                   # 横罫線(紺グレー)。大学ノート風
+        "vline": "#c96b63",                                   # 左の縦罫(赤)。書き始めの目印
         "input_bg": "#f6efdc", "input_fg": "#243b6b",
         "hl": {"kw": "#7a3b8f", "str": "#8a5a2b", "com": "#9a8f78", "num": "#3a5a3a"},
         "font": ("Hiragino Maru Gothic ProN", 15),
@@ -123,7 +130,7 @@ class AdvisorGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Advisor")
-        self.root.geometry("760x600")
+        self.root.geometry("560x800")          # A5 大学ノートの比率(縦長)
         # Dock/ウィンドウのアイコン(できれば)。tkinter だけだと Dock は
         # Python の絵のままのことがあるが、少なくとも試みる。
         try:
@@ -190,7 +197,7 @@ class AdvisorGUI:
         self.hist_btn.pack(side=tk.RIGHT, padx=6, pady=4)
 
         # ヘッダー下の細い罫線(共通)。
-        self.hdr_rule = tk.Frame(self.root, height=2)
+        self.hdr_rule = tk.Frame(self.root, height=1)
         self.hdr_rule.pack(side=tk.TOP, fill=tk.X, padx=56)
 
         # ================= 会話ペイン =================
@@ -202,7 +209,7 @@ class AdvisorGUI:
         self.status_lbl.pack(side=tk.BOTTOM, fill=tk.X)
         self.inbar = tk.Frame(self.chat_pane)
         self.inbar.pack(side=tk.BOTTOM, fill=tk.X)
-        self.in_rule = tk.Frame(self.chat_pane, height=2)
+        self.in_rule = tk.Frame(self.chat_pane, height=1)
         self.in_rule.pack(side=tk.BOTTOM, fill=tk.X, padx=56)
         self.entry = tk.Text(self.inbar, height=3, wrap=tk.CHAR,
                              relief=tk.FLAT, highlightthickness=0, padx=8, pady=6)
@@ -420,6 +427,45 @@ class AdvisorGUI:
             self.holes.create_arc(10, y - 9, 28, y + 9, start=120, extent=140,
                                   style=tk.ARC, outline=t["dim"], width=2)
             y += 60
+        # 大学ノートの赤い縦罫。ノート本文のすぐ左(この canvas の右端)に。
+        vline = t.get("vline")
+        if vline:
+            self.holes.create_line(35, 0, 35, h, fill=vline, width=1)
+
+    def _draw_rules(self, _event=None):
+        """ノートモードだけ、本文の上に薄い横罫線を敷く(大学ノート風)。
+        tkinter の Text は不透明で背景に線を置けないため、細い Frame を
+        文字高の間隔で上に重ねる。1px なのでスクロールや選択はほぼ素通り。"""
+        if not hasattr(self, "_rule_lines"):
+            self._rule_lines = []
+        color = THEMES[self.theme_name].get("hline")
+        if not color:
+            for ln in self._rule_lines:
+                ln.place_forget()
+            return
+        h = self.note.winfo_height()
+        if h < 40:
+            return
+        try:
+            lh = tkfont.Font(font=self.font).metrics("linespace") + 2
+        except Exception:
+            lh = self.font[1] + 10
+        try:
+            pad = int(str(self.note.cget("pady")) or 0)
+        except ValueError:
+            pad = 14
+        top = pad + lh - 3
+        need = max(0, (h - top) // lh + 1)
+        while len(self._rule_lines) < need:
+            self._rule_lines.append(
+                tk.Frame(self.note, height=1, bd=0, highlightthickness=0))
+        for i, ln in enumerate(self._rule_lines):
+            if i < need:
+                ln.config(bg=color)
+                ln.place(in_=self.note, x=0, relwidth=1.0,
+                         y=int(top + i * lh), height=1)
+            else:
+                ln.place_forget()
 
     def _apply_theme(self, name):
         t = THEMES[name]
@@ -480,10 +526,11 @@ class AdvisorGUI:
             self.root.after(60, self._relayout)
             return
         third = int(w / 3)
-        near = self.font[1] * 2          # 端に文字が食い込まないよう余白を確保
+        near = EDGE                      # 書き出しは赤い縦罫のすぐ右から
         self.note.tag_config("you", lmargin1=third, lmargin2=third, rmargin=near)
         for tag in ("ai", "dim", "err"):
             self.note.tag_config(tag, lmargin1=near, lmargin2=near, rmargin=third)
+        self._draw_rules()
 
     def _choose_theme(self, key):
         if key not in THEMES:
@@ -655,7 +702,10 @@ class AdvisorGUI:
                 f"AIが次のことをしようとしています:\n\n{obj.get('prompt', '')}\n\n許可しますか？")
             self._write({"t": "reply", "value": "y" if ok else "n"})
         elif t == "need_passphrase":
-            self._ask_passphrase(obj.get("prompt", "パスフレーズ"))
+            self._ask_passphrase(obj.get("prompt", "パスフレーズ"),
+                                 recover=bool(obj.get("recover")))
+        elif t == "need_recovery":
+            self._ask_recovery(obj.get("mode", "new"), obj.get("question", ""))
         elif t == "history_list":
             self._show_history_dialog(obj.get("items", []))
         elif t == "history_loaded":
@@ -686,8 +736,8 @@ class AdvisorGUI:
                 command=lambda n=i: self._write({"t": "user", "text": str(n)}),
             )
 
-    def _ask_passphrase(self, prompt):
-        is_new = "新し" in prompt
+    def _ask_passphrase(self, prompt, recover=False):
+        # 確認欄はなし(1回だけ)。打ち間違い対策は「合言葉」で担保する。
         dlg = tk.Toplevel(self.root)
         dlg.title("パスフレーズ")
         dlg.transient(self.root)
@@ -698,27 +748,61 @@ class AdvisorGUI:
         ent.pack(padx=16, pady=6)
         ent.focus_set()
 
-        var2, ent2 = tk.StringVar(), None
-        if is_new:
-            tk.Label(dlg, text="もう一度（確認）").pack(padx=16)
-            ent2 = tk.Entry(dlg, show="*", textvariable=var2, width=32)
-            ent2.pack(padx=16, pady=6)
-        msg = tk.Label(dlg, text="", fg="#c0392b")
-        msg.pack()
-
         def done(_=None):
-            if is_new and var.get() != var2.get():
-                msg.config(text="一致しません")
-                return
             self._write({"t": "passphrase", "value": var.get()})
             dlg.destroy()
 
-        ent.bind("<Return>", (lambda e: ent2.focus_set()) if is_new else done)
-        if ent2 is not None:
-            ent2.bind("<Return>", done)
-        tk.Button(dlg, text="OK", command=done).pack(pady=(4, 14))
+        ent.bind("<Return>", done)
+        btns = tk.Frame(dlg)
+        btns.pack(pady=(4, 14))
+        tk.Button(btns, text="OK", command=done).pack(side=tk.LEFT, padx=4)
+        if recover:
+            def use_recovery():
+                self._write({"t": "passphrase", "recover": 1})
+                dlg.destroy()
+            tk.Button(btns, text="合言葉で復旧", command=use_recovery).pack(side=tk.LEFT, padx=4)
         dlg.protocol("WM_DELETE_WINDOW",
                      lambda: (self._write({"t": "passphrase", "value": ""}), dlg.destroy()))
+
+    def _ask_recovery(self, mode, question):
+        # 合言葉(秘密の質問)。mode="new"=初回設定(質問+答え)、
+        # mode="unlock"=復旧(答えだけ)。答えは大文字小文字・前後空白を区別しない。
+        dlg = tk.Toplevel(self.root)
+        dlg.title("合言葉")
+        dlg.transient(self.root)
+        dlg.grab_set()
+        q_var = tk.StringVar(value=question)
+        a_var = tk.StringVar()
+
+        if mode == "new":
+            tk.Label(dlg, justify=tk.LEFT, text=(
+                "パスフレーズを忘れたときの復旧用です(必須)。\n"
+                "あなたにしか答えられない質問にしてください。\n"
+                "例: 初めて買った車の名前は？").rstrip()).pack(padx=16, pady=(14, 6))
+            tk.Label(dlg, text="質問").pack(anchor="w", padx=16)
+            q_ent = tk.Entry(dlg, textvariable=q_var, width=36)
+            q_ent.pack(padx=16, pady=(0, 6))
+            q_ent.focus_set()
+        else:
+            tk.Label(dlg, text="合言葉で履歴を復旧します。").pack(padx=16, pady=(14, 6))
+            tk.Label(dlg, text=("質問: " + (question or "?"))).pack(anchor="w", padx=16)
+
+        tk.Label(dlg, text="答え").pack(anchor="w", padx=16)
+        a_ent = tk.Entry(dlg, textvariable=a_var, width=36)
+        a_ent.pack(padx=16, pady=(0, 6))
+        if mode != "new":
+            a_ent.focus_set()
+
+        def done(_=None):
+            self._write({"t": "recovery",
+                         "question": q_var.get(), "answer": a_var.get()})
+            dlg.destroy()
+
+        a_ent.bind("<Return>", done)
+        tk.Button(dlg, text="OK", command=done).pack(pady=(4, 14))
+        dlg.protocol("WM_DELETE_WINDOW",
+                     lambda: (self._write({"t": "recovery", "question": "", "answer": ""}),
+                              dlg.destroy()))
 
     # ---------- 続きから(過去の会話) ----------
     def _show_history_dialog(self, items):

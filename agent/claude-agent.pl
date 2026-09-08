@@ -311,6 +311,16 @@ sub gui_read {
     my $obj  = eval { MiniJSON::decode($text) };
     return (ref $obj eq 'HASH') ? $obj : {};
 }
+# 指定した t の入力が来るまで読み飛ばして返す。EOF なら undef。
+sub gui_read_typed {
+    my ($want) = @_;
+    while (1) {
+        my $r = gui_read();
+        return undef unless defined $r;
+        return $r if ($r->{t} || '') eq $want;
+        return undef if ($r->{t} || '') eq 'quit';
+    }
+}
 
 sub emit_text {
     my ($text) = @_;
@@ -1004,16 +1014,46 @@ sub unlock_history {
         mkdir($d, 0700) unless -d $d;
     }
 
-    # GUI モード: パスフレーズ要求は必ず「1回の need_passphrase = 1回の
-    # ダイアログ」にする。端末用の2回入力・合言葉・旧形式移行はここでは扱わず、
-    # 素直な「新規設定 or 解錠」だけにする(GUI側が二重入力の確認をする)。
+    # GUI モード: パスフレーズは1回入力(確認欄なし)。代わりに「合言葉」を
+    # 必須にして、忘れたときの復旧口を必ず用意する。旧形式移行は端末側で。
     if ($GUI) {
-        return 0 if -f $HISTORY_CHECK && ! -f $KEY_FILE;   # 旧形式は端末側で移行してもらう
+        return 0 if -f $HISTORY_CHECK && ! -f $KEY_FILE;
+
+        my $has_recovery = (-f $KEY_RECOVERY && -f $KEY_RECOVERY_Q) ? 1 : 0;
 
         if (-f $KEY_FILE) {                                 # 解錠
             while (1) {
-                my $pass = read_secret("履歴パスフレーズ");
-                return 0 unless defined $pass && $pass ne '';   # 空=履歴なしで起動
+                gui_send({ t => 'need_passphrase', prompt => '履歴パスフレーズ',
+                           recover => ($has_recovery ? 1 : 0) });
+                my $r = gui_read_typed('passphrase');
+                return 0 unless defined $r;
+
+                if ($has_recovery && $r->{recover}) {       # 合言葉で復旧
+                    my $q = '';
+                    if (open(my $qf, '<:encoding(UTF-8)', $KEY_RECOVERY_Q)) {
+                        local $/; $q = <$qf>; close $qf;
+                        $q = '' unless defined $q;
+                        $q =~ s/\s+\z//;          # local $/ 中は chomp が効かない
+                    }
+                    gui_send({ t => 'need_recovery', mode => 'unlock', question => ($q // '') });
+                    my $ra = gui_read_typed('recovery');
+                    return 0 unless defined $ra;
+                    my $ans = defined $ra->{answer} ? $ra->{answer} : '';
+                    my $m = ($ans ne '') ? _open_master(_norm_answer($ans), $KEY_RECOVERY) : undef;
+                    unless (defined $m) { emit_error("合言葉の答えが違います。"); next; }
+                    # 新しいパスフレーズに付け替える
+                    gui_send({ t => 'need_passphrase',
+                               prompt => '新しい履歴パスフレーズを決めてください' });
+                    my $np = gui_read_typed('passphrase');
+                    my $npv = ($np && defined $np->{value}) ? $np->{value} : '';
+                    _save_master($npv, $m, $KEY_FILE) if $npv ne '';
+                    emit_note("復旧しました。");
+                    $ENV{CLAUDE_HIST_PASS} = $m;
+                    return 1;
+                }
+
+                my $pass = defined $r->{value} ? $r->{value} : '';
+                return 0 if $pass eq '';                    # 空=履歴なしで起動
                 my $master = _open_master($pass, $KEY_FILE);
                 if (defined $master) { $ENV{CLAUDE_HIST_PASS} = $master; return 1; }
                 emit_error("パスフレーズが違います。もう一度どうぞ。");
@@ -1021,11 +1061,29 @@ sub unlock_history {
         }
 
         # 初回設定
-        my $p = read_secret("新しい履歴パスフレーズを決めてください");
-        return 0 unless defined $p && $p ne '';
+        gui_send({ t => 'need_passphrase',
+                   prompt => '新しい履歴パスフレーズを決めてください' });
+        my $r = gui_read_typed('passphrase');
+        return 0 unless defined $r;
+        my $p = defined $r->{value} ? $r->{value} : '';
+        return 0 if $p eq '';
         my $master = _gen_master();
         return 0 unless defined $master;
         return 0 unless _save_master($p, $master, $KEY_FILE);
+
+        # 合言葉(必須)。設定されなければ暗号化履歴は残さない
+        # (パスフレーズを忘れたときに全損するのを避けるため)。
+        gui_send({ t => 'need_recovery', mode => 'new' });
+        my $rr = gui_read_typed('recovery');
+        my $q = ($rr && defined $rr->{question}) ? $rr->{question} : '';
+        my $a = ($rr && defined $rr->{answer})   ? $rr->{answer}   : '';
+        if ($q ne '' && $a ne '' && _save_master(_norm_answer($a), $master, $KEY_RECOVERY)) {
+            _write_private($KEY_RECOVERY_Q, "$q\n");
+        } else {
+            unlink $KEY_FILE;
+            emit_error("合言葉が設定されなかったので、今回は履歴を保存しません。");
+            return 0;
+        }
         $ENV{CLAUDE_HIST_PASS} = $master;
         return 1;
     }

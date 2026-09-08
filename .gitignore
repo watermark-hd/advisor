@@ -1,2 +1,4 @@
 .DS_Store
 *.rtf
+__pycache__/
+*.pyc
