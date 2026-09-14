@@ -170,27 +170,24 @@ class AdvisorGUI:
         self.bar = tk.Frame(self.root)
         self.bar.pack(fill=tk.X)
 
-        # 会話 / コマンド の切り替えボタン(もっと小さく。右側のボタンを
-        # 圧迫しないよう幅を切り詰める)
-        self.tab_chat = tk.Button(self.bar, text="会話", relief=tk.SUNKEN,
-                                  padx=3, pady=0,
-                                  command=lambda: self._show_pane("chat"))
+        # ヘッダーのボタン類は tk.Button/Menubutton だと macOS が独自の
+        # 見た目(枠付きの部品)を勝手に描いてしまい、relief や色を変えても
+        # 反映されない。tk.Label + クリックの組み合わせにすると、Tk自身が
+        # 描画するので好きな見た目(会話タブと同じ手書き風)にできる。
+        self.tab_chat = tk.Label(self.bar, text="会話", cursor="pointinghand", padx=3)
+        self.tab_chat.bind("<Button-1>", lambda e: self._show_pane("chat"))
         self.tab_chat.pack(side=tk.LEFT, padx=(8, 1), pady=2)
-        self.tab_cmd = tk.Button(self.bar, text="コマンド", relief=tk.RAISED,
-                                 padx=3, pady=0,
-                                 command=lambda: self._show_pane("cmd"))
+        self.tab_cmd = tk.Label(self.bar, text="コマンド", cursor="pointinghand", padx=3)
+        self.tab_cmd.bind("<Button-1>", lambda e: self._show_pane("cmd"))
         self.tab_cmd.pack(side=tk.LEFT, padx=1, pady=2)
 
         self.model_lbl = tk.Label(self.bar, textvariable=self.model_label_var)
         self.model_lbl.pack(side=tk.LEFT, padx=10, pady=6)
 
-        # 見た目・AI切替・続きから、の3つは全部 tk.Button + ポップアップメニュー
-        # にして見た目を統一する(Menubutton と Button は macOS だと見た目が
-        # 微妙に違ってしまうため、3つとも同じ部品で揃える)。
-        self.theme_btn = tk.Button(self.bar, relief=tk.RAISED, borderwidth=1,
-                                   padx=8, pady=2)
+        # 見た目・AI切替・続きから、の3つも同じ理由で tk.Label + クリックに
+        self.theme_btn = tk.Label(self.bar, cursor="pointinghand", padx=8, pady=2)
         self.theme_menu = tk.Menu(self.theme_btn, tearoff=0)
-        self.theme_btn.config(command=lambda: self._popup_menu(self.theme_menu, self.theme_btn))
+        self.theme_btn.bind("<Button-1>", lambda e: self._popup_menu(self.theme_menu, self.theme_btn))
         self._theme_choice = tk.StringVar(value=self.theme_name)
         for key, spec in THEMES.items():
             self.theme_menu.add_radiobutton(
@@ -199,15 +196,15 @@ class AdvisorGUI:
         self.theme_btn.pack(side=tk.RIGHT, padx=6, pady=3)
 
         # 幅は固定せず文字なりに(固定幅にすると文字が欠けて矢印と重なるため)
-        self.switch_btn = tk.Button(self.bar, text="AIを切替 ▾", relief=tk.RAISED,
-                                    borderwidth=1, padx=8, pady=2)
+        self.switch_btn = tk.Label(self.bar, text="AIを切替 ▾", cursor="pointinghand",
+                                   padx=8, pady=2)
         self.switch_menu = tk.Menu(self.switch_btn, tearoff=0)
-        self.switch_btn.config(command=lambda: self._popup_menu(self.switch_menu, self.switch_btn))
+        self.switch_btn.bind("<Button-1>", lambda e: self._popup_menu(self.switch_menu, self.switch_btn))
         self.switch_btn.pack(side=tk.RIGHT, padx=6, pady=3)
 
-        self.hist_btn = tk.Button(self.bar, text="続きから", relief=tk.RAISED,
-                                  borderwidth=1, padx=8, pady=2,
-                                  command=lambda: self._write({"t": "list_history"}))
+        self.hist_btn = tk.Label(self.bar, text="続きから", cursor="pointinghand",
+                                 padx=8, pady=2)
+        self.hist_btn.bind("<Button-1>", lambda e: self._write({"t": "list_history"}))
         self.hist_btn.pack(side=tk.RIGHT, padx=6, pady=3)
 
         # ヘッダー下の細い罫線(共通)。
@@ -225,10 +222,15 @@ class AdvisorGUI:
         self.inbar.pack(side=tk.BOTTOM, fill=tk.X)
         self.in_rule = tk.Frame(self.chat_pane, height=1)
         self.in_rule.pack(side=tk.BOTTOM, fill=tk.X, padx=56)
+        # 書き込み欄の左にもルーズリーフの穴を続ける(ノートの続きに見えるように)
+        self.entry_holes = tk.Canvas(self.inbar, width=36, highlightthickness=0)
+        self.entry_holes.pack(side=tk.LEFT, fill=tk.Y)
+        self.entry_holes.bind("<Configure>", lambda e: self._draw_holes())
         self.entry = tk.Text(self.inbar, height=3, wrap=tk.CHAR,
                              relief=tk.FLAT, highlightthickness=0, padx=8, pady=6)
         # 書き込み欄の書き出しを、下の赤ラインの左端・解答の左端あたりに揃える
-        self.entry.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(48, 4), pady=6)
+        # (左の穴の分だけ、ここでの余白は小さくてよい)
+        self.entry.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(10, 4), pady=6)
         self.entry.bind("<Return>", self._on_return)
         # プレースホルダーは「実際にキーを打った時」だけ消す(フォーカスだけで
         # 消すと、パスフレーズのダイアログを閉じた直後などフォーカスが
@@ -309,7 +311,8 @@ class AdvisorGUI:
     def _style_tabs(self):
         """ヘッダーのボタン全部(会話/コマンド のタブ + 見た目/AI切替/
         続きから)を同じ調子にする。ノートモードは手書き風＋下線、
-        他モードは今まで通りの押しボタン。タブだけ選択中を太字にする。"""
+        他モードは押しボタン風の枠。タブだけ選択中を太字にする。
+        (全部 tk.Label なので activebackground 等 Button専用オプションは使えない)"""
         t = THEMES[self.theme_name]
         active = getattr(self, "pane", "chat")
         tabs = (("chat", self.tab_chat), ("cmd", self.tab_cmd))
@@ -321,31 +324,22 @@ class AdvisorGUI:
                 fs = max(9, f[1] - 1)   # 少し小さめにして幅を詰める
                 fnt = (f[0], fs, "bold", "underline") if on \
                     else (f[0], fs, "underline")
-                btn.config(relief=tk.FLAT, bd=0, highlightthickness=0,
-                           overrelief=tk.FLAT, takefocus=0, font=fnt,
-                           fg=(t["fg"] if on else t["dim"]),
-                           bg=t["bg"], activebackground=t["bg"],
-                           activeforeground=t["fg"], highlightbackground=t["bg"])
+                btn.config(relief=tk.FLAT, bd=0, highlightthickness=0, font=fnt,
+                           fg=(t["fg"] if on else t["dim"]), bg=t["bg"])
             else:
                 tf = t["font"]
                 btn.config(relief=(tk.SUNKEN if on else tk.RAISED), bd=2,
-                           overrelief=tk.RAISED, font=(tf[0], tf[1]),
-                           fg=t["dim"], bg=t["bg"], activebackground=t["bg"],
-                           activeforeground=t["dim"], highlightbackground=t["bg"])
+                           highlightthickness=0, font=(tf[0], tf[1]),
+                           fg=t["dim"], bg=t["bg"])
         for btn in utils:
             if self.theme_name == "paper":
                 f = self.font
                 fs = max(10, f[1])   # 手書き風は小さいと潰れるので本文サイズのまま
                 btn.config(relief=tk.FLAT, bd=0, highlightthickness=0,
-                           overrelief=tk.FLAT, takefocus=0,
-                           font=(f[0], fs, "underline"),
-                           fg=t["dim"], bg=t["bg"], activebackground=t["bg"],
-                           activeforeground=t["fg"], highlightbackground=t["bg"])
+                           font=(f[0], fs, "underline"), fg=t["dim"], bg=t["bg"])
             else:
-                btn.config(relief=tk.RAISED, bd=1, overrelief=tk.RAISED,
-                           font=("Hiragino Sans", 11),
-                           fg=t["dim"], bg=t["bg"], activebackground=t["bg"],
-                           activeforeground=t["dim"], highlightbackground=t["bg"])
+                btn.config(relief=tk.RAISED, bd=1, highlightthickness=0,
+                           font=("Hiragino Sans", 11), fg=t["dim"], bg=t["bg"])
 
     # ---------- コマンドパネル ----------
     def _cmd_env(self):
@@ -477,33 +471,36 @@ class AdvisorGUI:
         return "break"
 
     def _draw_holes(self):
-        self.holes.delete("all")
+        # ノート本文の左と、書き込み欄の左と、両方に同じ穴を敷く
+        # (書き込み欄までルーズリーフの続きに見えるように)
+        self._draw_holes_on(self.holes)
+        self._draw_holes_on(self.entry_holes)
+
+    def _draw_holes_on(self, canvas):
+        canvas.delete("all")
         t = THEMES[self.theme_name]
         if not t.get("holes"):
-            self.holes.config(width=1, bg=t["bg"])
+            canvas.config(width=1, bg=t["bg"])
             return
-        self.holes.config(width=36, bg=t["bg"])
-        h = self.holes.winfo_height() or 600
+        canvas.config(width=36, bg=t["bg"])
+        h = canvas.winfo_height() or 600
         hole = t.get("code_bg", "#e9e0c8")   # 紙より一段濃いグレー
         y = 36
         while y < h:
             # 穴本体(薄グレー) + 左下に濃いめの弧で影っぽく。
             # 小さめ・間隔を詰めて本物のルーズリーフに近づけた
-            self.holes.create_oval(12, y - 6, 24, y + 6, fill=hole, outline=t["dim"])
-            self.holes.create_arc(12, y - 6, 24, y + 6, start=120, extent=140,
-                                  style=tk.ARC, outline=t["dim"], width=2)
+            canvas.create_oval(12, y - 6, 24, y + 6, fill=hole, outline=t["dim"])
+            canvas.create_arc(12, y - 6, 24, y + 6, start=120, extent=140,
+                              style=tk.ARC, outline=t["dim"], width=2)
             y += 48
         # 大学ノートの赤い縦罫。ノート本文のすぐ左(この canvas の右端)に。
         vline = t.get("vline")
         if vline:
-            self.holes.create_line(35, 0, 35, h, fill=vline, width=1)
+            canvas.create_line(35, 0, 35, h, fill=vline, width=1)
 
     def _request_draw_rules(self):
-        """_draw_rules を「Tkの今の描画処理が全部片付いてから」呼ぶ。
-        挿入・スクロールの通知の“最中”に dlineinfo を読むと、まだ描き
-        終わっていない古い行位置を拾ってしまい線が文字の途中にズレる
-        ことがあったための対策。after_idle でイベント処理の切れ目まで待つ。
-        何度呼ばれても1回にまとめる。"""
+        """_draw_rules を呼ぶ薄いラッパー。何度呼ばれても取りこぼさない
+        よう after_idle 越しにまとめて1回呼ぶ。"""
         if getattr(self, "_rules_pending", False):
             return
         self._rules_pending = True
@@ -515,12 +512,11 @@ class AdvisorGUI:
 
     def _draw_rules(self, _event=None):
         """ノートモードだけ、本文の上に薄い横罫線を敷く(大学ノート風)。
-        tkinter の Text は不透明で背景に線を置けないため、細い Frame を
-        重ねて置く。フォントの推定値から間隔を計算すると実際の行送りと
-        すぐズレる(コード混じり・折返しなどで簡単に狂う)ので、
-        dlineinfo() で「今実際に表示されている行」の位置を1行ずつ
-        Tk自身に聞いて、その足元に線を置く。ズレようがない代わりに
-        スクロールのたびに引き直しが要る(呼び出し側で対応)。"""
+        以前は「今Tkが実際に描いた行はどこか」を後から聞いて線を合わせて
+        いたが、聞くタイミングによって微妙にズレることがあった。
+        発想を逆にして、罫線を先に固定ピッチで敷き、本文の行送り
+        (spacing1/2/3、_apply_theme で設定)をそのピッチにぴったり
+        合わせる。行送りは自分で決めた値なので、ズレる余地がない。"""
         if not hasattr(self, "_rule_lines"):
             self._rule_lines = []
         color = THEMES[self.theme_name].get("hline")
@@ -534,46 +530,25 @@ class AdvisorGUI:
                 ln.place_forget()
             return
 
-        # まず見えている行それぞれの (上端, ベースライン, 高さ) を集める。
-        rows = []
-        y = 0
-        guard = 0
-        while y < h and guard < 500:
-            guard += 1
-            idx = self.note.index("@0,%d" % y)
-            info = self.note.dlineinfo(idx)
-            if not info:
-                break
-            _x, ly, _w, lheight, baseline = info
-            if lheight <= 0:
-                break
-            rows.append((ly, baseline, lheight))
-            ny = ly + lheight + 1
-            if ny <= y:                    # 念のため無限ループ防止
-                break
-            y = ny
+        pitch = getattr(self, "pitch", self.font[1] + 14)
+        ascent = getattr(self, "_font_ascent", int(self.font[1] * 0.9))
+        descent = getattr(self, "_font_descent", int(self.font[1] * 0.25))
+        try:
+            pad = int(str(self.note.cget("pady")) or 0)
+        except ValueError:
+            pad = 14
+        gap = max(1, pitch - ascent - descent)
+        first = pad + ascent + descent + gap // 2   # すき間のちょうど真ん中
+        need = max(0, int((h - first) // pitch) + 1)
 
-        # 線は「このベースライン」と「次の行の上端」の間の、実測した
-        # すき間のちょうど真ん中に置く。すき間の大きさを仮定しない
-        # (フォント指標からの推定だと簡単にズレたため)ので、行間が
-        # 詰まっていても文字にかぶらない。
-        ys = []
-        for i, (ly, baseline, lheight) in enumerate(rows):
-            base_y = ly + baseline
-            if i + 1 < len(rows):
-                next_top = rows[i + 1][0]
-                gap = next_top - base_y
-                ys.append(base_y + gap // 2 if gap >= 2 else next_top)
-            else:
-                ys.append(min(base_y + 3, ly + lheight - 1))
-
-        while len(self._rule_lines) < len(ys):
+        while len(self._rule_lines) < need:
             self._rule_lines.append(
                 tk.Frame(self.note, height=1, bd=0, highlightthickness=0))
         for i, ln in enumerate(self._rule_lines):
-            if i < len(ys):
+            if i < need:
                 ln.config(bg=color)
-                ln.place(in_=self.note, x=0, relwidth=1.0, y=ys[i], height=1)
+                ln.place(in_=self.note, x=0, relwidth=1.0,
+                         y=int(first + i * pitch), height=1)
             else:
                 ln.place_forget()
 
@@ -602,10 +577,22 @@ class AdvisorGUI:
         self.entry.config(bg=t["bg"], fg=entry_fg, font=(f[0], min(f[1], 13)),
                           insertbackground=t["input_fg"])
 
-        # 行間は詰めぎみに(狭くしてほしいとの声)。横罫線は _draw_rules が
-        # 実際の表示行位置(dlineinfo)を見て置くので、ここでの間隔はもう
-        # 見た目の詰まり具合の調整だけでよい。
-        S = max(3, int(round(f[1] * 0.3)))
+        # 罫線の考え方を変えた: 今までは「今Tkが実際に描いた行はどこか」を
+        # 後から聞いて線を合わせようとしていたが、タイミングによってズレる
+        # ことがあった。今回は逆に「罫線の間隔(ピッチ)を先に決めて、本文の
+        # 行送りをそのピッチにぴったり合わせる」方式にする。行送りは
+        # spacing1=0 / spacing2=spacing3=S で自分で決めた値そのものなので、
+        # フォントの ascent+descent(実測)+ S が必ずピッチになる。
+        try:
+            fm = tkfont.Font(font=f)
+            ascent = fm.metrics("ascent")
+            descent = fm.metrics("descent")
+        except Exception:
+            ascent, descent = int(f[1] * 0.9), int(f[1] * 0.25)
+        S = max(8, int(round(f[1] * 0.6)))   # 罫線ぶんのすき間
+        self._font_ascent = ascent
+        self._font_descent = descent
+        self.pitch = ascent + descent + S
         self.note.config(spacing1=0, spacing2=S, spacing3=S)
         self._draw_holes()
 
