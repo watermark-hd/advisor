@@ -184,11 +184,13 @@ class AdvisorGUI:
         self.model_lbl = tk.Label(self.bar, textvariable=self.model_label_var)
         self.model_lbl.pack(side=tk.LEFT, padx=10, pady=6)
 
-        # 見た目: プルダウン(各テーマをラジオ選択)
-        self.theme_btn = tk.Menubutton(self.bar, relief=tk.RAISED, borderwidth=1,
-                                       padx=8, pady=2)
+        # 見た目・AI切替・続きから、の3つは全部 tk.Button + ポップアップメニュー
+        # にして見た目を統一する(Menubutton と Button は macOS だと見た目が
+        # 微妙に違ってしまうため、3つとも同じ部品で揃える)。
+        self.theme_btn = tk.Button(self.bar, relief=tk.RAISED, borderwidth=1,
+                                   padx=8, pady=2)
         self.theme_menu = tk.Menu(self.theme_btn, tearoff=0)
-        self.theme_btn.config(menu=self.theme_menu)
+        self.theme_btn.config(command=lambda: self._popup_menu(self.theme_menu, self.theme_btn))
         self._theme_choice = tk.StringVar(value=self.theme_name)
         for key, spec in THEMES.items():
             self.theme_menu.add_radiobutton(
@@ -197,11 +199,10 @@ class AdvisorGUI:
         self.theme_btn.pack(side=tk.RIGHT, padx=6, pady=3)
 
         # 幅は固定せず文字なりに(固定幅にすると文字が欠けて矢印と重なるため)
-        self.switch_btn = tk.Menubutton(self.bar, text="AIを切替 ▾", relief=tk.RAISED,
-                                        borderwidth=1, padx=8, pady=2,
-                                        indicatoron=False)
+        self.switch_btn = tk.Button(self.bar, text="AIを切替 ▾", relief=tk.RAISED,
+                                    borderwidth=1, padx=8, pady=2)
         self.switch_menu = tk.Menu(self.switch_btn, tearoff=0)
-        self.switch_btn.config(menu=self.switch_menu)
+        self.switch_btn.config(command=lambda: self._popup_menu(self.switch_menu, self.switch_btn))
         self.switch_btn.pack(side=tk.RIGHT, padx=6, pady=3)
 
         self.hist_btn = tk.Button(self.bar, text="続きから", relief=tk.RAISED,
@@ -253,7 +254,7 @@ class AdvisorGUI:
             # 表示範囲が変わるたび(挿入・スクロールバー・マウスホイール
             # すべてここを通る)に横罫線を引き直す。ズレを溜めない。
             sb.set(*args)
-            self._draw_rules()
+            self._request_draw_rules()
         self.note.config(yscrollcommand=_note_scrolled)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
         self.note.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -480,6 +481,21 @@ class AdvisorGUI:
         if vline:
             self.holes.create_line(35, 0, 35, h, fill=vline, width=1)
 
+    def _request_draw_rules(self):
+        """_draw_rules を「Tkの今の描画処理が全部片付いてから」呼ぶ。
+        挿入・スクロールの通知の“最中”に dlineinfo を読むと、まだ描き
+        終わっていない古い行位置を拾ってしまい線が文字の途中にズレる
+        ことがあったための対策。after_idle でイベント処理の切れ目まで待つ。
+        何度呼ばれても1回にまとめる。"""
+        if getattr(self, "_rules_pending", False):
+            return
+        self._rules_pending = True
+
+        def go():
+            self._rules_pending = False
+            self._draw_rules()
+        self.root.after_idle(go)
+
     def _draw_rules(self, _event=None):
         """ノートモードだけ、本文の上に薄い横罫線を敷く(大学ノート風)。
         tkinter の Text は不透明で背景に線を置けないため、細い Frame を
@@ -603,7 +619,17 @@ class AdvisorGUI:
         self.note.tag_config("you", lmargin1=you_left, lmargin2=you_left, rmargin=near)
         for tag in ("ai", "dim", "err"):
             self.note.tag_config(tag, lmargin1=near, lmargin2=near, rmargin=ai_right)
-        self._draw_rules()
+        self._request_draw_rules()
+
+    def _popup_menu(self, menu, widget):
+        """見た目/AI切替ボタン用。普通のButtonの真下にメニューを出す
+        (Menubuttonをやめて見た目を他のボタンと揃えるための代わり)。"""
+        x = widget.winfo_rootx()
+        y = widget.winfo_rooty() + widget.winfo_height()
+        try:
+            menu.tk_popup(x, y)
+        finally:
+            menu.grab_release()
 
     def _choose_theme(self, key):
         if key not in THEMES:
