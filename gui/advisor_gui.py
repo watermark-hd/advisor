@@ -170,15 +170,16 @@ class AdvisorGUI:
         self.bar = tk.Frame(self.root)
         self.bar.pack(fill=tk.X)
 
-        # 会話 / コマンド の切り替えボタン(大きすぎない小さめサイズに)
+        # 会話 / コマンド の切り替えボタン(もっと小さく。右側のボタンを
+        # 圧迫しないよう幅を切り詰める)
         self.tab_chat = tk.Button(self.bar, text="会話", relief=tk.SUNKEN,
-                                  padx=6, pady=0,
+                                  padx=3, pady=0,
                                   command=lambda: self._show_pane("chat"))
-        self.tab_chat.pack(side=tk.LEFT, padx=(10, 2), pady=2)
+        self.tab_chat.pack(side=tk.LEFT, padx=(8, 1), pady=2)
         self.tab_cmd = tk.Button(self.bar, text="コマンド", relief=tk.RAISED,
-                                 padx=6, pady=0,
+                                 padx=3, pady=0,
                                  command=lambda: self._show_pane("cmd"))
-        self.tab_cmd.pack(side=tk.LEFT, padx=2, pady=2)
+        self.tab_cmd.pack(side=tk.LEFT, padx=1, pady=2)
 
         self.model_lbl = tk.Label(self.bar, textvariable=self.model_label_var)
         self.model_lbl.pack(side=tk.LEFT, padx=10, pady=6)
@@ -244,7 +245,13 @@ class AdvisorGUI:
                             padx=18, pady=14, relief=tk.FLAT,
                             highlightthickness=0, spacing2=2)
         sb = tk.Scrollbar(mid, command=self.note.yview)
-        self.note.config(yscrollcommand=sb.set)
+
+        def _note_scrolled(*args):
+            # 表示範囲が変わるたび(挿入・スクロールバー・マウスホイール
+            # すべてここを通る)に横罫線を引き直す。ズレを溜めない。
+            sb.set(*args)
+            self._draw_rules()
+        self.note.config(yscrollcommand=_note_scrolled)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
         self.note.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.note.bind("<Configure>", self._relayout)
@@ -304,8 +311,9 @@ class AdvisorGUI:
             on = (name == active) or (name == "chat" and active not in ("chat", "cmd"))
             if self.theme_name == "paper":
                 f = self.font
-                fnt = (f[0], f[1], "bold", "underline") if on \
-                    else (f[0], f[1], "underline")
+                fs = max(9, f[1] - 1)   # 少し小さめにして幅を詰める
+                fnt = (f[0], fs, "bold", "underline") if on \
+                    else (f[0], fs, "underline")
                 btn.config(relief=tk.FLAT, bd=0, highlightthickness=0,
                            overrelief=tk.FLAT, takefocus=0, font=fnt,
                            fg=(t["fg"] if on else t["dim"]),
@@ -471,7 +479,11 @@ class AdvisorGUI:
     def _draw_rules(self, _event=None):
         """ノートモードだけ、本文の上に薄い横罫線を敷く(大学ノート風)。
         tkinter の Text は不透明で背景に線を置けないため、細い Frame を
-        文字高の間隔で上に重ねる。1px なのでスクロールや選択はほぼ素通り。"""
+        重ねて置く。フォントの推定値から間隔を計算すると実際の行送りと
+        すぐズレる(コード混じり・折返しなどで簡単に狂う)ので、
+        dlineinfo() で「今実際に表示されている行」の位置を1行ずつ
+        Tk自身に聞いて、その足元に線を置く。ズレようがない代わりに
+        スクロールのたびに引き直しが要る(呼び出し側で対応)。"""
         if not hasattr(self, "_rule_lines"):
             self._rule_lines = []
         color = THEMES[self.theme_name].get("hline")
@@ -480,24 +492,36 @@ class AdvisorGUI:
                 ln.place_forget()
             return
         h = self.note.winfo_height()
-        if h < 40:
+        if h < 20:
+            for ln in self._rule_lines:
+                ln.place_forget()
             return
-        pitch = getattr(self, "pitch", self.font[1] + 12)
-        try:
-            pad = int(str(self.note.cget("pady")) or 0)
-        except ValueError:
-            pad = 14
-        top = pad + getattr(self, "rule_off", pitch - 3)
-        need = max(0, int((h - top) // pitch) + 1)
-        lh = pitch
-        while len(self._rule_lines) < need:
+
+        ys = []
+        y = 0
+        guard = 0
+        while y < h and guard < 500:
+            guard += 1
+            idx = self.note.index("@0,%d" % y)
+            info = self.note.dlineinfo(idx)
+            if not info:
+                break
+            _x, ly, _w, lheight, baseline = info
+            if lheight <= 0:
+                break
+            ys.append(ly + baseline + 3)   # ベースライン(文字の足元)の少し下
+            ny = ly + lheight + 1
+            if ny <= y:                    # 念のため無限ループ防止
+                break
+            y = ny
+
+        while len(self._rule_lines) < len(ys):
             self._rule_lines.append(
                 tk.Frame(self.note, height=1, bd=0, highlightthickness=0))
         for i, ln in enumerate(self._rule_lines):
-            if i < need:
+            if i < len(ys):
                 ln.config(bg=color)
-                ln.place(in_=self.note, x=0, relwidth=1.0,
-                         y=int(top + i * lh), height=1)
+                ln.place(in_=self.note, x=0, relwidth=1.0, y=ys[i], height=1)
             else:
                 ln.place_forget()
 
@@ -529,21 +553,10 @@ class AdvisorGUI:
         self.entry.config(bg=t["bg"], fg=entry_fg, font=(f[0], min(f[1], 13)),
                           insertbackground=t["input_fg"])
 
-        # --- 行の縦リズムを一定に(横罫線に文字が乗るように) ---
-        # どの表示行も「文字高 + S」ぶんだけ進むように spacing を揃える。
-        # spacing1=0 / spacing2=spacing3=S にすると、折返し行も段落の切れ目も
-        # 等間隔になる。罫線はこの間隔で置くので、文字が毎行だいたい線に乗る。
-        try:
-            fm = tkfont.Font(font=f)
-            ls = fm.metrics("ascent") + fm.metrics("descent")
-        except Exception:
-            ls = int(f[1] * 1.3)
-        # 罫線までの余白は控えめに。線は隙間の中でも上寄り=文字のすぐ下に
-        # 置いて、「線の少し上に文字が乗っている」見た目にする。
-        self._line_extra = max(5, int(round(f[1] * 0.5)))
-        S = self._line_extra
-        self.pitch = ls + S                       # 1行の送り幅(px)
-        self.rule_off = ls + max(2, int(round(S * 0.2)))  # 罫線は文字のすぐ下
+        # 行間は詰めぎみに(狭くしてほしいとの声)。横罫線は _draw_rules が
+        # 実際の表示行位置(dlineinfo)を見て置くので、ここでの間隔はもう
+        # 見た目の詰まり具合の調整だけでよい。
+        S = max(3, int(round(f[1] * 0.3)))
         self.note.config(spacing1=0, spacing2=S, spacing3=S)
         self._draw_holes()
 
@@ -566,7 +579,7 @@ class AdvisorGUI:
         for key, tag in HL_TAG.items():
             self.note.tag_config(tag, foreground=hl.get(key, t["ai"]), font=code_f,
                                  background=t.get("code_bg", t["bg"]))
-        self.theme_btn.config(text="見た目: " + t["label"] + " ▾")
+        self.theme_btn.config(text=t["label"] + " ▾")  # 「見た目: 」は省いて幅を詰める
         self._relayout()
 
     def _relayout(self, event=None):
