@@ -186,7 +186,7 @@ class AdvisorGUI:
 
         # 見た目: プルダウン(各テーマをラジオ選択)
         self.theme_btn = tk.Menubutton(self.bar, relief=tk.RAISED, borderwidth=1,
-                                       padx=8, pady=1)
+                                       padx=8, pady=2)
         self.theme_menu = tk.Menu(self.theme_btn, tearoff=0)
         self.theme_btn.config(menu=self.theme_menu)
         self._theme_choice = tk.StringVar(value=self.theme_name)
@@ -198,14 +198,14 @@ class AdvisorGUI:
 
         # 幅は固定せず文字なりに(固定幅にすると文字が欠けて矢印と重なるため)
         self.switch_btn = tk.Menubutton(self.bar, text="AIを切替 ▾", relief=tk.RAISED,
-                                        borderwidth=1, padx=8, pady=1,
+                                        borderwidth=1, padx=8, pady=2,
                                         indicatoron=False)
         self.switch_menu = tk.Menu(self.switch_btn, tearoff=0)
         self.switch_btn.config(menu=self.switch_menu)
         self.switch_btn.pack(side=tk.RIGHT, padx=6, pady=3)
 
         self.hist_btn = tk.Button(self.bar, text="続きから", relief=tk.RAISED,
-                                  padx=8, pady=1,
+                                  padx=8, pady=2,
                                   command=lambda: self._write({"t": "list_history"}))
         self.hist_btn.pack(side=tk.RIGHT, padx=6, pady=3)
 
@@ -229,7 +229,10 @@ class AdvisorGUI:
         # 書き込み欄の書き出しを、下の赤ラインの左端・解答の左端あたりに揃える
         self.entry.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(48, 4), pady=6)
         self.entry.bind("<Return>", self._on_return)
-        self.entry.bind("<FocusIn>", self._entry_focus_in)
+        # プレースホルダーは「実際にキーを打った時」だけ消す(フォーカスだけで
+        # 消すと、パスフレーズのダイアログを閉じた直後などフォーカスが
+        # ふっと戻っただけで消えてしまい、「消えてる」と誤解されるため)。
+        self.entry.bind("<Key>", self._entry_clear_placeholder)
         self.entry.bind("<FocusOut>", self._entry_focus_out)
         self._entry_ph = False
         self.send_btn = tk.Button(self.inbar, text="送信", width=6,
@@ -464,13 +467,14 @@ class AdvisorGUI:
         self.holes.config(width=36, bg=t["bg"])
         h = self.holes.winfo_height() or 600
         hole = t.get("code_bg", "#e9e0c8")   # 紙より一段濃いグレー
-        y = 44
+        y = 36
         while y < h:
-            # 穴本体(薄グレー) + 左下に濃いめの弧で影っぽく
-            self.holes.create_oval(10, y - 9, 28, y + 9, fill=hole, outline=t["dim"])
-            self.holes.create_arc(10, y - 9, 28, y + 9, start=120, extent=140,
+            # 穴本体(薄グレー) + 左下に濃いめの弧で影っぽく。
+            # 小さめ・間隔を詰めて本物のルーズリーフに近づけた
+            self.holes.create_oval(12, y - 6, 24, y + 6, fill=hole, outline=t["dim"])
+            self.holes.create_arc(12, y - 6, 24, y + 6, start=120, extent=140,
                                   style=tk.ARC, outline=t["dim"], width=2)
-            y += 60
+            y += 48
         # 大学ノートの赤い縦罫。ノート本文のすぐ左(この canvas の右端)に。
         vline = t.get("vline")
         if vline:
@@ -537,9 +541,11 @@ class AdvisorGUI:
             w.config(bg=t["bg"])                            # ヘッダーも本文と同色
         self.model_lbl.config(bg=t["bg"], fg=t["dim"], font=(f[0], f[1] - 2))
         self.status_lbl.config(bg=t["bg"], fg=t["dim"], font=(f[0], 10))
+        # 手書き風フォントは小さいと潰れて読みにくいので、ここは普通の
+        # UI 用フォントで(「続きから」が読めない、との指摘)。
         for b in (self.theme_btn, self.switch_btn, self.hist_btn):
             b.config(bg=t["bg"], fg=t["dim"], activebackground=t["bg"],
-                     highlightbackground=t["bg"])
+                     highlightbackground=t["bg"], font=("Hiragino Sans", 11))
         self._style_tabs()
         self.cmd_out.config(font=code_f)
         self.cmd_entry.config(font=code_f)
@@ -794,7 +800,8 @@ class AdvisorGUI:
 
     # ---------- 小物 ----------
     def _set_model(self, provider, model):
-        self.model_label_var.set(f"{provider} / {model}" if provider else model)
+        # 「provider / model」は長すぎてヘッダーを圧迫するので、モデル名だけ表示。
+        self.model_label_var.set(model or provider)
 
     def _fill_menu(self, models):
         self.switch_menu.delete(0, tk.END)
@@ -943,7 +950,7 @@ class AdvisorGUI:
         t = THEMES[self.theme_name]
         self.entry.config(fg=(t["dim"] if self._entry_ph else t["input_fg"]))
 
-    def _entry_focus_in(self, _event=None):
+    def _entry_clear_placeholder(self, _event=None):
         if self._entry_ph:
             self.entry.delete("1.0", tk.END)
             self._entry_ph = False
