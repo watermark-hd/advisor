@@ -307,11 +307,14 @@ class AdvisorGUI:
         self._style_tabs()
 
     def _style_tabs(self):
-        """ノートモードでは「会話」「コマンド」を手書き風＋青い下線に。
-        他モードでは今まで通りの押しボタン(選択中はへこむ)。"""
+        """ヘッダーのボタン全部(会話/コマンド のタブ + 見た目/AI切替/
+        続きから)を同じ調子にする。ノートモードは手書き風＋下線、
+        他モードは今まで通りの押しボタン。タブだけ選択中を太字にする。"""
         t = THEMES[self.theme_name]
         active = getattr(self, "pane", "chat")
-        for name, btn in (("chat", self.tab_chat), ("cmd", self.tab_cmd)):
+        tabs = (("chat", self.tab_chat), ("cmd", self.tab_cmd))
+        utils = (self.theme_btn, self.switch_btn, self.hist_btn)
+        for name, btn in tabs:
             on = (name == active) or (name == "chat" and active not in ("chat", "cmd"))
             if self.theme_name == "paper":
                 f = self.font
@@ -327,6 +330,20 @@ class AdvisorGUI:
                 tf = t["font"]
                 btn.config(relief=(tk.SUNKEN if on else tk.RAISED), bd=2,
                            overrelief=tk.RAISED, font=(tf[0], tf[1]),
+                           fg=t["dim"], bg=t["bg"], activebackground=t["bg"],
+                           activeforeground=t["dim"], highlightbackground=t["bg"])
+        for btn in utils:
+            if self.theme_name == "paper":
+                f = self.font
+                fs = max(10, f[1])   # 手書き風は小さいと潰れるので本文サイズのまま
+                btn.config(relief=tk.FLAT, bd=0, highlightthickness=0,
+                           overrelief=tk.FLAT, takefocus=0,
+                           font=(f[0], fs, "underline"),
+                           fg=t["dim"], bg=t["bg"], activebackground=t["bg"],
+                           activeforeground=t["fg"], highlightbackground=t["bg"])
+            else:
+                btn.config(relief=tk.RAISED, bd=1, overrelief=tk.RAISED,
+                           font=("Hiragino Sans", 11),
                            fg=t["dim"], bg=t["bg"], activebackground=t["bg"],
                            activeforeground=t["dim"], highlightbackground=t["bg"])
 
@@ -517,7 +534,8 @@ class AdvisorGUI:
                 ln.place_forget()
             return
 
-        ys = []
+        # まず見えている行それぞれの (上端, ベースライン, 高さ) を集める。
+        rows = []
         y = 0
         guard = 0
         while y < h and guard < 500:
@@ -529,11 +547,25 @@ class AdvisorGUI:
             _x, ly, _w, lheight, baseline = info
             if lheight <= 0:
                 break
-            ys.append(ly + baseline + 5)   # ベースライン(文字の足元)の少し下
+            rows.append((ly, baseline, lheight))
             ny = ly + lheight + 1
             if ny <= y:                    # 念のため無限ループ防止
                 break
             y = ny
+
+        # 線は「このベースライン」と「次の行の上端」の間の、実測した
+        # すき間のちょうど真ん中に置く。すき間の大きさを仮定しない
+        # (フォント指標からの推定だと簡単にズレたため)ので、行間が
+        # 詰まっていても文字にかぶらない。
+        ys = []
+        for i, (ly, baseline, lheight) in enumerate(rows):
+            base_y = ly + baseline
+            if i + 1 < len(rows):
+                next_top = rows[i + 1][0]
+                gap = next_top - base_y
+                ys.append(base_y + gap // 2 if gap >= 2 else next_top)
+            else:
+                ys.append(min(base_y + 3, ly + lheight - 1))
 
         while len(self._rule_lines) < len(ys):
             self._rule_lines.append(
@@ -557,12 +589,7 @@ class AdvisorGUI:
             w.config(bg=t["bg"])                            # ヘッダーも本文と同色
         self.model_lbl.config(bg=t["bg"], fg=t["dim"], font=(f[0], f[1] - 2))
         self.status_lbl.config(bg=t["bg"], fg=t["dim"], font=(f[0], 10))
-        # 手書き風フォントは小さいと潰れて読みにくいので、ここは普通の
-        # UI 用フォントで(「続きから」が読めない、との指摘)。
-        for b in (self.theme_btn, self.switch_btn, self.hist_btn):
-            b.config(bg=t["bg"], fg=t["dim"], activebackground=t["bg"],
-                     highlightbackground=t["bg"], font=("Hiragino Sans", 11))
-        self._style_tabs()
+        self._style_tabs()  # 見た目/AI切替/続きから の3つもここでまとめて設定
         self.cmd_out.config(font=code_f)
         self.cmd_entry.config(font=code_f)
         self.cmd_prompt.config(font=code_f)
