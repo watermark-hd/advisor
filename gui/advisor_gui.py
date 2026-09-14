@@ -205,7 +205,7 @@ class AdvisorGUI:
         self.switch_btn.pack(side=tk.RIGHT, padx=6, pady=3)
 
         self.hist_btn = tk.Button(self.bar, text="続きから", relief=tk.RAISED,
-                                  padx=8, pady=2,
+                                  borderwidth=1, padx=8, pady=2,
                                   command=lambda: self._write({"t": "list_history"}))
         self.hist_btn.pack(side=tk.RIGHT, padx=6, pady=3)
 
@@ -513,7 +513,7 @@ class AdvisorGUI:
             _x, ly, _w, lheight, baseline = info
             if lheight <= 0:
                 break
-            ys.append(ly + baseline + 3)   # ベースライン(文字の足元)の少し下
+            ys.append(ly + baseline + 5)   # ベースライン(文字の足元)の少し下
             ny = ly + lheight + 1
             if ny <= y:                    # 念のため無限ループ防止
                 break
@@ -899,7 +899,10 @@ class AdvisorGUI:
         def choose(_=None):
             sel = lb.curselection()
             if sel:
-                self._write({"t": "resume", "file": items[sel[0]]["file"]})
+                idx = sel[0]
+                # ノートらしく「○ページ目/全△ページ」を後で先頭に出すため覚えておく
+                self._resume_page = (idx + 1, len(items))
+                self._write({"t": "resume", "file": items[idx]["file"]})
             dlg.destroy()
 
         lb.bind("<Double-Button-1>", choose)
@@ -917,6 +920,10 @@ class AdvisorGUI:
             self.note.mark_unset("q_anchor")
         except Exception:
             pass
+        page = getattr(self, "_resume_page", None)
+        self._resume_page = None
+        if page:
+            self._append(f"（{page[0]}ページ目 / 全{page[1]}ページ）", "dim")
         for e in entries:
             role = e.get("role")
             txt = str(e.get("text", ""))
