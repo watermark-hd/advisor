@@ -30,6 +30,10 @@ from tkinter import messagebox
 # すぐ右から書き始める、という要望に合わせた小さめの値。
 EDGE = 10
 
+# 書き込み欄が空のときに薄字で出しておく案内。「どこに書けばいいか
+# わからない」という声を受けて、クリックすると消えるプレースホルダーに。
+ENTRY_PLACEHOLDER = "ここに書いてください（Enterで送信）"
+
 CFG_PATH = os.path.expanduser("~/.claude-agent/gui.json")
 
 # ```lang ... ``` のコードブロック検出
@@ -65,7 +69,7 @@ THEMES = {
         "vline": "#c96b63",                                   # 左の縦罫(赤)。書き始めの目印
         "input_bg": "#f6efdc", "input_fg": "#243b6b",
         "hl": {"kw": "#7a3b8f", "str": "#8a5a2b", "com": "#9a8f78", "num": "#3a5a3a"},
-        "font": ("Hiragino Maru Gothic ProN", 15),
+        "font": ("Hiragino Maru Gothic ProN", 12),  # 少し小さめにして行数を稼ぐ
     },
     "coding": {
         "label": "コーディング", "prompt_prefix": True,
@@ -156,6 +160,7 @@ class AdvisorGUI:
 
         self._build_ui()
         self._apply_theme(self.theme_name)
+        self._entry_show_placeholder()
         self._start_backend()
         self.root.after(80, self._pump)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -165,20 +170,22 @@ class AdvisorGUI:
         self.bar = tk.Frame(self.root)
         self.bar.pack(fill=tk.X)
 
-        # 会話 / コマンド の切り替えボタン
+        # 会話 / コマンド の切り替えボタン(大きすぎない小さめサイズに)
         self.tab_chat = tk.Button(self.bar, text="会話", relief=tk.SUNKEN,
+                                  padx=6, pady=0,
                                   command=lambda: self._show_pane("chat"))
-        self.tab_chat.pack(side=tk.LEFT, padx=(10, 2), pady=6)
+        self.tab_chat.pack(side=tk.LEFT, padx=(10, 2), pady=2)
         self.tab_cmd = tk.Button(self.bar, text="コマンド", relief=tk.RAISED,
+                                 padx=6, pady=0,
                                  command=lambda: self._show_pane("cmd"))
-        self.tab_cmd.pack(side=tk.LEFT, padx=2, pady=6)
+        self.tab_cmd.pack(side=tk.LEFT, padx=2, pady=2)
 
         self.model_lbl = tk.Label(self.bar, textvariable=self.model_label_var)
         self.model_lbl.pack(side=tk.LEFT, padx=10, pady=6)
 
         # 見た目: プルダウン(各テーマをラジオ選択)
         self.theme_btn = tk.Menubutton(self.bar, relief=tk.RAISED, borderwidth=1,
-                                       padx=10, pady=3)
+                                       padx=8, pady=1)
         self.theme_menu = tk.Menu(self.theme_btn, tearoff=0)
         self.theme_btn.config(menu=self.theme_menu)
         self._theme_choice = tk.StringVar(value=self.theme_name)
@@ -186,18 +193,20 @@ class AdvisorGUI:
             self.theme_menu.add_radiobutton(
                 label=spec["label"], value=key, variable=self._theme_choice,
                 command=lambda k=key: self._choose_theme(k))
-        self.theme_btn.pack(side=tk.RIGHT, padx=6, pady=4)
+        self.theme_btn.pack(side=tk.RIGHT, padx=6, pady=3)
 
-        self.switch_btn = tk.Menubutton(self.bar, text="AIを切替  ▾", relief=tk.RAISED,
-                                        borderwidth=1, padx=10, pady=3, width=9,
-                                        anchor=tk.W, indicatoron=False)
+        # 幅は固定せず文字なりに(固定幅にすると文字が欠けて矢印と重なるため)
+        self.switch_btn = tk.Menubutton(self.bar, text="AIを切替 ▾", relief=tk.RAISED,
+                                        borderwidth=1, padx=8, pady=1,
+                                        indicatoron=False)
         self.switch_menu = tk.Menu(self.switch_btn, tearoff=0)
         self.switch_btn.config(menu=self.switch_menu)
-        self.switch_btn.pack(side=tk.RIGHT, padx=6, pady=4)
+        self.switch_btn.pack(side=tk.RIGHT, padx=6, pady=3)
 
         self.hist_btn = tk.Button(self.bar, text="続きから", relief=tk.RAISED,
+                                  padx=8, pady=1,
                                   command=lambda: self._write({"t": "list_history"}))
-        self.hist_btn.pack(side=tk.RIGHT, padx=6, pady=4)
+        self.hist_btn.pack(side=tk.RIGHT, padx=6, pady=3)
 
         # ヘッダー下の細い罫線(共通)。
         self.hdr_rule = tk.Frame(self.root, height=1)
@@ -219,6 +228,9 @@ class AdvisorGUI:
         # 書き込み欄の書き出しを、下の赤ラインの左端・解答の左端あたりに揃える
         self.entry.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(48, 4), pady=6)
         self.entry.bind("<Return>", self._on_return)
+        self.entry.bind("<FocusIn>", self._entry_focus_in)
+        self.entry.bind("<FocusOut>", self._entry_focus_out)
+        self._entry_ph = False
         self.send_btn = tk.Button(self.inbar, text="送信", width=6,
                                   command=self._send_current)
         self.send_btn.pack(side=tk.LEFT, padx=(0, 8), pady=6)
@@ -513,7 +525,8 @@ class AdvisorGUI:
         self.in_rule.config(bg=line)                        # 入力欄の上の罫線
         self.note.config(bg=t["bg"], fg=t["fg"], font=f, insertbackground=t["fg"])
         # 入力欄はモード間で高さを揃えるためフォントサイズを 13 で頭打ちに。
-        self.entry.config(bg=t["bg"], fg=t["input_fg"], font=(f[0], min(f[1], 13)),
+        entry_fg = t["dim"] if getattr(self, "_entry_ph", False) else t["input_fg"]
+        self.entry.config(bg=t["bg"], fg=entry_fg, font=(f[0], min(f[1], 13)),
                           insertbackground=t["input_fg"])
 
         # --- 行の縦リズムを一定に(横罫線に文字が乗るように) ---
@@ -521,13 +534,16 @@ class AdvisorGUI:
         # spacing1=0 / spacing2=spacing3=S にすると、折返し行も段落の切れ目も
         # 等間隔になる。罫線はこの間隔で置くので、文字が毎行だいたい線に乗る。
         try:
-            ls = tkfont.Font(font=f).metrics("linespace")
+            fm = tkfont.Font(font=f)
+            ls = fm.metrics("ascent") + fm.metrics("descent")
         except Exception:
-            ls = int(f[1] * 1.5)
-        self._line_extra = max(7, int(round(ls * 0.42)))
+            ls = int(f[1] * 1.3)
+        # 罫線までの余白は控えめに。線は隙間の中でも上寄り=文字のすぐ下に
+        # 置いて、「線の少し上に文字が乗っている」見た目にする。
+        self._line_extra = max(5, int(round(f[1] * 0.5)))
         S = self._line_extra
         self.pitch = ls + S                       # 1行の送り幅(px)
-        self.rule_off = ls + int(round(S * 0.45)) # 1本目の罫線までの距離
+        self.rule_off = ls + max(2, int(round(S * 0.2)))  # 罫線は文字のすぐ下
         self.note.config(spacing1=0, spacing2=S, spacing3=S)
         self._draw_holes()
 
@@ -904,6 +920,26 @@ class AdvisorGUI:
         self.busy = busy
         self.send_btn.config(state=tk.DISABLED if busy else tk.NORMAL)
 
+    def _entry_show_placeholder(self):
+        self.entry.delete("1.0", tk.END)
+        self.entry.insert("1.0", ENTRY_PLACEHOLDER)
+        self._entry_ph = True
+        self._entry_apply_ph_color()
+
+    def _entry_apply_ph_color(self):
+        t = THEMES[self.theme_name]
+        self.entry.config(fg=(t["dim"] if self._entry_ph else t["input_fg"]))
+
+    def _entry_focus_in(self, _event=None):
+        if self._entry_ph:
+            self.entry.delete("1.0", tk.END)
+            self._entry_ph = False
+            self._entry_apply_ph_color()
+
+    def _entry_focus_out(self, _event=None):
+        if not self.entry.get("1.0", "end-1c").strip():
+            self._entry_show_placeholder()
+
     def _on_return(self, event):
         if event.state & 0x0001:  # Shift+Enter は改行
             return
@@ -911,7 +947,7 @@ class AdvisorGUI:
         return "break"
 
     def _send_current(self):
-        if self.busy:
+        if self.busy or self._entry_ph:
             return
         text = self.entry.get("1.0", tk.END).strip()
         if not text:
