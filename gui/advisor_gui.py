@@ -565,9 +565,10 @@ class AdvisorGUI:
         # した後は先頭行が画面上端に来るわけではないので、そのぶんズレて
         # いた。ly をそのまま使えばスクロール位置に関係なく合う。
         gap = max(1, pitch - ascent - descent)
-        # 文字は下の線のすぐ下に来るよう、すき間の頭のほうに小さく置く
-        # (clearance が大きいと線が次の行に寄って「文字が上寄り」に見える)。
-        clearance = max(3, min(gap - 2, int(round(descent * 0.8)) + 2))
+        # 「文字のすぐ下」を小さい clearance(=すき間の頭のほう)で狙ったが
+        # 逆に上寄りに見える、との指摘が2回続いた。理屈より見え方を優先し、
+        # 向きを反転: すき間の終わりのほう(次の行の直前)に置く。
+        clearance = max(3, gap - max(3, int(round(descent * 0.8)) + 2))
         first = None
         try:
             top_idx = self.note.index("@0,0")
@@ -634,8 +635,8 @@ class AdvisorGUI:
             descent = fm.metrics("descent")
         except Exception:
             ascent, descent = int(f[1] * 0.9), int(f[1] * 0.25)
-        S = max(14, int(round(f[1] * 1.1)))   # 罫線ぶんのすき間(狭すぎて文字と
-                                               # くっついて見えるとの指摘で拡大)
+        S = max(9, int(round(f[1] * 0.7)))    # 罫線ぶんのすき間。行数を増やす
+                                               # 要望で再び詰めた
         self._font_ascent = ascent
         self._font_descent = descent
         self.pitch = ascent + descent + S
