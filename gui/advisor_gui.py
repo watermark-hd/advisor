@@ -211,9 +211,17 @@ class AdvisorGUI:
         self.hdr_rule = tk.Frame(self.root, height=1)
         self.hdr_rule.pack(side=tk.TOP, fill=tk.X, padx=56)
 
+        # 会話ペインとコマンドペインは同じ場所に重ねて置き、切り替えは
+        # pack_forget/pack でなく tkraise で行う。pack_forget は中の
+        # 罫線・穴のFrameを含めて全部いったんアンマップするようで、
+        # 古いMacだと切り替えに何秒もかかっていた(tkraiseなら重ねた
+        # まま前後を入れ替えるだけで済む)。
+        self.pane_host = tk.Frame(self.root)
+        self.pane_host.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
         # ================= 会話ペイン =================
-        self.chat_pane = tk.Frame(self.root)
-        self.chat_pane.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self.chat_pane = tk.Frame(self.pane_host)
+        self.chat_pane.place(relx=0, rely=0, relwidth=1, relheight=1)
 
         self.status_lbl = tk.Label(self.chat_pane, textvariable=self.status_var,
                                    anchor=tk.W)
@@ -265,7 +273,8 @@ class AdvisorGUI:
         # ================= コマンドペイン =================
         # 見た目はテーマに関係なく端末風(黒地)で固定。scp/ssh 用。
         CB, CF, CIN, CERR, CDIM = "#0f1115", "#d6d6d6", "#4ec9e6", "#ff6b6b", "#7a8088"
-        self.cmd_pane = tk.Frame(self.root, bg=CB)          # 最初は非表示
+        self.cmd_pane = tk.Frame(self.pane_host, bg=CB)
+        self.cmd_pane.place(relx=0, rely=0, relwidth=1, relheight=1)
         self.cmd_row = tk.Frame(self.cmd_pane, bg=CB)
         self.cmd_row.pack(side=tk.BOTTOM, fill=tk.X)
         self.cmd_prompt = tk.Label(self.cmd_row, textvariable=self.cmd_prompt_var,
@@ -296,16 +305,17 @@ class AdvisorGUI:
         self.cmd_out.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self._cmd_refresh_prompt()
 
+        self.pane = "chat"
+        self.chat_pane.tkraise()   # 起動直後は会話ペインを前面に
+
     def _show_pane(self, name):
         self.pane = name
         if name == "cmd":
-            self.chat_pane.pack_forget()
-            self.cmd_pane.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+            self.cmd_pane.tkraise()
             self._cmd_refresh_prompt()
             self.cmd_entry.focus_set()
         else:
-            self.cmd_pane.pack_forget()
-            self.chat_pane.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+            self.chat_pane.tkraise()
         self._style_tabs()
 
     def _style_tabs(self):
@@ -551,7 +561,10 @@ class AdvisorGUI:
         except ValueError:
             pad = 14
         gap = max(1, pitch - ascent - descent)
-        first = pad + ascent + descent + gap // 2   # すき間のちょうど真ん中
+        # 真ん中でなく、文字のすぐ下(すき間の頭のほう)に置く。
+        # 「下の線に文字が乗ってる」ノートらしい見た目にするため、
+        # すき間の大部分は次の行の文字が来る"前"の余白として残す。
+        first = pad + ascent + descent + max(2, gap // 5)
         need = max(0, int((h - first) // pitch) + 1)
 
         while len(self._rule_lines) < need:
