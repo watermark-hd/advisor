@@ -558,32 +558,32 @@ class AdvisorGUI:
         pitch = getattr(self, "pitch", self.font[1] + 14)
         ascent = getattr(self, "_font_ascent", int(self.font[1] * 0.9))
         descent = getattr(self, "_font_descent", int(self.font[1] * 0.25))
-        try:
-            pad = int(str(self.note.cget("pady")) or 0)
-        except ValueError:
-            pad = 14
 
-        # 行の頭からベースラインまでの実際の距離を、今見えている行で
-        # 1回だけ実測して校正する(フォント指標からの推定 = ascent だけ
-        # だとこのフォントでは外れた)。baseline はその行自身の上端からの
-        # 相対値なので、スクロール位置に関係なく使える。呼び出しが
-        # resize 等の節目(after_idle 経由)だけなので、前にあった
-        # 「描画の途中で聞いてズレる」問題は起きない。
-        # 文字は下の線のすぐ上に乗り、次の行までは広めに余白を残す。
-        # (まだ上寄り、との指摘で clearance をだいぶ増やした)
+        # 罫線の基準位置は「今画面のいちばん上に見えている行」を実測して
+        # 決める。dlineinfo の ly はスクロール後の実際の画面Y座標を返す
+        # ので、pad(先頭行の上の余白)を足すのは間違いだった―スクロール
+        # した後は先頭行が画面上端に来るわけではないので、そのぶんズレて
+        # いた。ly をそのまま使えばスクロール位置に関係なく合う。
         gap = max(1, pitch - ascent - descent)
-        clearance = min(gap - 3, max(6, int(round(gap * 0.6))))
-        baseline = None
+        # 文字は下の線のすぐ下に来るよう、すき間の頭のほうに小さく置く
+        # (clearance が大きいと線が次の行に寄って「文字が上寄り」に見える)。
+        clearance = max(3, min(gap - 2, int(round(descent * 0.8)) + 2))
+        first = None
         try:
             top_idx = self.note.index("@0,0")
             info = self.note.dlineinfo(top_idx)
-            if info and info[4] > 0:
-                baseline = info[4]
+            if info:
+                _x, ly, _w, _lh, baseline = info
+                if baseline > 0:
+                    first = ly + baseline + clearance
         except tk.TclError:
             pass
-        if baseline is None:
-            baseline = ascent
-        first = pad + baseline + clearance
+        if first is None:
+            try:
+                pad = int(str(self.note.cget("pady")) or 0)
+            except ValueError:
+                pad = 14
+            first = pad + ascent + descent + clearance
         need = max(0, int((h - first) // pitch) + 1)
 
         while len(self._rule_lines) < need:
