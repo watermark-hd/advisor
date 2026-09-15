@@ -246,6 +246,10 @@ class AdvisorGUI:
         # まま入ってしまう不具合があった。<<Modified>> は挿入が確定
         # した後に飛ぶのでIMEの変換を邪魔しない。
         self.entry.bind("<<Modified>>", self._entry_on_modified)
+        # クリックした瞬間にも消す(クリックはIMEに関係ないので安全)。
+        # これが無いと、プレースホルダーの途中をクリックしてから打った
+        # ときに文字がプレースホルダーの真ん中に混ざって残ってしまう。
+        self.entry.bind("<Button-1>", self._entry_click_clear)
         self.entry.bind("<FocusOut>", self._entry_focus_out)
         self._entry_ph = False
         self.send_btn = tk.Button(self.inbar, text="送信", width=6,
@@ -537,11 +541,11 @@ class AdvisorGUI:
 
     def _draw_rules(self, _event=None):
         """ノートモードだけ、本文の上に薄い横罫線を敷く(大学ノート風)。
-        以前は「今Tkが実際に描いた行はどこか」を後から聞いて線を合わせて
-        いたが、聞くタイミングによって微妙にズレることがあった。
-        発想を逆にして、罫線を先に固定ピッチで敷き、本文の行送り
-        (spacing1/2/3、_apply_theme で設定)をそのピッチにぴったり
-        合わせる。行送りは自分で決めた値なので、ズレる余地がない。"""
+        「1行だけ実測してあとはピッチで延長」方式は、見出しや絵文字の
+        混じる行がたまたま基準になると全体が狂って線が二重になるなど
+        壊れる事故が起きた。今は今見えている行を全部1つずつ実測し、
+        隣り合う行どうしのすき間に個別に線を置く。行ごとに完結するので、
+        1行だけ高さが違っても他の行に影響しない。"""
         if not hasattr(self, "_rule_lines"):
             self._rule_lines = []
         color = THEMES[self.theme_name].get("hline")
@@ -558,58 +562,55 @@ class AdvisorGUI:
         pitch = getattr(self, "pitch", self.font[1] + 14)
         ascent = getattr(self, "_font_ascent", int(self.font[1] * 0.9))
         descent = getattr(self, "_font_descent", int(self.font[1] * 0.25))
-
-        # 罫線の基準位置は、指標からの推定に頼らず「今画面に実際に見えて
-        # いる、隣り合う2行」を直接実測して決める。1行だけ測って
-        # ascent/descent の推定で次の行の位置を計算する方式は、狙いと
-        # 逆に見えるという指摘が続いたため取りやめた。2行分の実際の
-        # 画面Y座標が分かれば、その"すき間"のどこに線を置くかを直接
-        # 指定でき、推定の誤差が入り込む余地がない。
         gap = max(1, pitch - ascent - descent)
 
-        # 見出し(##)や絵文字が混じる行は、その行だけ高さがピッチと
-        # 違うことがある。そこを基準に実測してしまうと、線が全部
-        # おかしな位置に建ってしまっていた(見出し直後で線が二重に
-        # なったのはこれが原因)。実測する前に「この行の高さは想定
-        # ピッチに近いか」を必ず確認し、怪しければ実測を捨てて
-        # 安全な計算に倒す。
-        first = None
+        # 今見えている行を上から順に1つずつ実測する。
+        rows = []
+        y = 0
+        guard = 0
         try:
-            top_idx = self.note.index("@0,0")
-            info0 = self.note.dlineinfo(top_idx)
-            if info0:
-                y0, h0, base0 = info0[1], info0[3], info0[4]
-                if base0 > 0 and abs(h0 - pitch) <= max(6, pitch * 0.35):
-                    real_gap = None
-                    next_idx = self.note.index("@0,%d" % (y0 + h0 + 1))
-                    info1 = self.note.dlineinfo(next_idx)
-                    if info1 and info1[1] > y0:
-                        real_gap = info1[1] - (y0 + base0 + descent)
-                    # 隣の行も実測できて、かつ想定ピッチと近ければそれを使う。
-                    # そうでなければ「今の行だけは正しく実測できている」
-                    # 前提で、すき間の大きさだけ想定値(gap)を使う。
-                    if real_gap is not None and 0 < real_gap <= gap * 1.6:
-                        first = y0 + base0 + descent + int(round(real_gap * 0.9))
-                    else:
-                        first = y0 + base0 + descent + int(round(gap * 0.9))
+            while y < h and guard < 200:
+                guard += 1
+                idx = self.note.index("@0,%d" % y)
+                info = self.note.dlineinfo(idx)
+                if not info:
+                    break
+                _x, ly, _w, lh, base = info
+                if lh <= 0 or base <= 0:
+                    break
+                rows.append((ly, lh, base))
+                ny = ly + lh + 1
+                if ny <= y:          # 念のため無限ループ防止
+                    break
+                y = ny
         except tk.TclError:
-            pass
-        if first is None:
-            try:
-                pad = int(str(self.note.cget("pady")) or 0)
-            except ValueError:
-                pad = 14
-            first = pad + ascent + descent + int(round(gap * 0.9))
-        need = max(0, int((h - first) // pitch) + 1)
+            rows = []
 
-        while len(self._rule_lines) < need:
+        # 隣り合う行と行のすき間の、9割のところ(次の行のすぐ手前)に
+        # 線を置く。「下の罫線に文字を沿わせる」向き。1行ずつ実測した
+        # すき間を使うので、行の高さが多少バラついても線はその行なりの
+        # すき間に収まる。
+        ys = []
+        for i, (ly, lh, base) in enumerate(rows):
+            text_bottom = ly + base + descent
+            if i + 1 < len(rows):
+                next_top = rows[i + 1][0]
+                real_gap = next_top - text_bottom
+                if real_gap > 2:
+                    ys.append(text_bottom + int(round(real_gap * 0.9)))
+                else:
+                    ys.append(next_top - 2)
+            else:
+                # 画面のいちばん下の行は次が見えないので、想定ピッチで代用
+                ys.append(text_bottom + int(round(gap * 0.9)))
+
+        while len(self._rule_lines) < len(ys):
             self._rule_lines.append(
                 tk.Frame(self.note, height=1, bd=0, highlightthickness=0))
         for i, ln in enumerate(self._rule_lines):
-            if i < need:
+            if i < len(ys):
                 ln.config(bg=color)
-                ln.place(in_=self.note, x=0, relwidth=1.0,
-                         y=int(first + i * pitch), height=1)
+                ln.place(in_=self.note, x=0, relwidth=1.0, y=ys[i], height=1)
             else:
                 ln.place_forget()
 
@@ -1059,6 +1060,14 @@ class AdvisorGUI:
         t = THEMES[self.theme_name]
         self.entry.config(fg=(t["dim"] if self._entry_ph else t["input_fg"]))
 
+    def _entry_click_clear(self, _event=None):
+        # クリックはIMEの変換に関係しないので、ここで消してしまって
+        # 問題ない(<Key> で消すとIMEの変換を邪魔するので使わない)。
+        if self._entry_ph:
+            self.entry.delete("1.0", tk.END)
+            self._entry_ph = False
+            self._entry_apply_ph_color()
+
     def _entry_on_modified(self, _event=None):
         # <<Modified>> は自分の delete/insert(プレースホルダーの表示自体)
         # でも飛んでくるので、毎回まずフラグを下ろす(でないと二度と
@@ -1069,11 +1078,17 @@ class AdvisorGUI:
         cur = self.entry.get("1.0", "end-1c")
         if cur == ENTRY_PLACEHOLDER:
             return   # プレースホルダーを表示しただけ(自分の変更)
-        # 実際に何か入力された。カーソルは表示時にプレースホルダーの
-        # 末尾にあるはずなので、普通は「プレースホルダー+打った文字」に
-        # なっている。プレースホルダー部分だけ取り除いて、打った分を残す。
+        # 実際に何か入力された。カーソルが末尾にあれば「プレースホルダー
+        # +打った文字」のはずなのでそれを取り除く。プレースホルダーの
+        # 途中をクリックしてから打った場合(_entry_click_clear が効いて
+        # いれば起きないはずだが念のため)も、含まれていれば取り除く。
         if cur.startswith(ENTRY_PLACEHOLDER):
             typed = cur[len(ENTRY_PLACEHOLDER):]
+        elif ENTRY_PLACEHOLDER in cur:
+            typed = cur.replace(ENTRY_PLACEHOLDER, "")
+        else:
+            typed = cur
+        if typed != cur:
             self.entry.delete("1.0", tk.END)
             if typed:
                 self.entry.insert("1.0", typed)
