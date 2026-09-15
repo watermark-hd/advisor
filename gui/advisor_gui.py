@@ -566,24 +566,32 @@ class AdvisorGUI:
         # 画面Y座標が分かれば、その"すき間"のどこに線を置くかを直接
         # 指定でき、推定の誤差が入り込む余地がない。
         gap = max(1, pitch - ascent - descent)
+
+        # 見出し(##)や絵文字が混じる行は、その行だけ高さがピッチと
+        # 違うことがある。そこを基準に実測してしまうと、線が全部
+        # おかしな位置に建ってしまっていた(見出し直後で線が二重に
+        # なったのはこれが原因)。実測する前に「この行の高さは想定
+        # ピッチに近いか」を必ず確認し、怪しければ実測を捨てて
+        # 安全な計算に倒す。
         first = None
         try:
             top_idx = self.note.index("@0,0")
             info0 = self.note.dlineinfo(top_idx)
             if info0:
                 y0, h0, base0 = info0[1], info0[3], info0[4]
-                next_idx = self.note.index("@0,%d" % (y0 + h0 + 1))
-                info1 = self.note.dlineinfo(next_idx)
-                if info1 and info1[1] > y0:
-                    y1 = info1[1]
-                    text_bottom = y0 + base0 + descent   # 1行目の文字の下端
-                    real_gap = y1 - text_bottom
-                    if real_gap > 3:
-                        # すき間の後ろのほう(次の行に近い側)に線を置く=
-                        # 「下の罫線に文字を沿わせる」向き
-                        first = text_bottom + int(round(real_gap * 0.9))
+                if base0 > 0 and abs(h0 - pitch) <= max(6, pitch * 0.35):
+                    real_gap = None
+                    next_idx = self.note.index("@0,%d" % (y0 + h0 + 1))
+                    info1 = self.note.dlineinfo(next_idx)
+                    if info1 and info1[1] > y0:
+                        real_gap = info1[1] - (y0 + base0 + descent)
+                    # 隣の行も実測できて、かつ想定ピッチと近ければそれを使う。
+                    # そうでなければ「今の行だけは正しく実測できている」
+                    # 前提で、すき間の大きさだけ想定値(gap)を使う。
+                    if real_gap is not None and 0 < real_gap <= gap * 1.6:
+                        first = y0 + base0 + descent + int(round(real_gap * 0.9))
                     else:
-                        first = y1 - 2
+                        first = y0 + base0 + descent + int(round(gap * 0.9))
         except tk.TclError:
             pass
         if first is None:
