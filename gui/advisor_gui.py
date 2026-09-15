@@ -560,11 +560,27 @@ class AdvisorGUI:
             pad = int(str(self.note.cget("pady")) or 0)
         except ValueError:
             pad = 14
-        gap = max(1, pitch - ascent - descent)
-        # 真ん中でなく、文字のすぐ下(すき間の頭のほう)に置く。
-        # 「下の線に文字が乗ってる」ノートらしい見た目にするため、
-        # すき間の大部分は次の行の文字が来る"前"の余白として残す。
-        first = pad + ascent + descent + max(2, gap // 5)
+
+        # 行の頭からベースラインまでの実際の距離を、今見えている行で
+        # 1回だけ実測して校正する(フォント指標からの推定 = ascent だけ
+        # だとこのフォントでは外れた)。baseline はその行自身の上端からの
+        # 相対値なので、スクロール位置に関係なく使える。呼び出しが
+        # resize 等の節目(after_idle 経由)だけなので、前にあった
+        # 「描画の途中で聞いてズレる」問題は起きない。
+        # 文字は下の線のすぐ上に乗り、次の行までは広めに余白を残す。
+        first = None
+        try:
+            top_idx = self.note.index("@0,0")
+            info = self.note.dlineinfo(top_idx)
+            if info:
+                baseline = info[4]
+                if baseline > 0:
+                    first = pad + baseline + max(2, int(round(descent * 0.6)))
+        except tk.TclError:
+            pass
+        if first is None:
+            gap = max(1, pitch - ascent - descent)
+            first = pad + ascent + descent + max(2, gap // 5)
         need = max(0, int((h - first) // pitch) + 1)
 
         while len(self._rule_lines) < need:
