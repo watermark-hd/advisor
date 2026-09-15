@@ -225,8 +225,8 @@ class AdvisorGUI:
         # 書き込み欄の左にもルーズリーフの穴を続ける(ノートの続きに見えるように)
         self.entry_holes = tk.Canvas(self.inbar, width=36, highlightthickness=0)
         self.entry_holes.pack(side=tk.LEFT, fill=tk.Y)
-        self.entry_holes.bind("<Configure>", lambda e: self._draw_holes())
-        self.entry = tk.Text(self.inbar, height=3, wrap=tk.CHAR,
+        self.entry_holes.bind("<Configure>", lambda e: self._request_draw_holes())
+        self.entry = tk.Text(self.inbar, height=2, wrap=tk.CHAR,
                              relief=tk.FLAT, highlightthickness=0, padx=8, pady=6)
         # 書き込み欄の書き出しを、下の赤ラインの左端・解答の左端あたりに揃える
         # (左の穴の分だけ、ここでの余白は小さくてよい)
@@ -246,7 +246,7 @@ class AdvisorGUI:
         mid.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self.holes = tk.Canvas(mid, width=34, highlightthickness=0)
         self.holes.pack(side=tk.LEFT, fill=tk.Y)
-        self.holes.bind("<Configure>", lambda e: self._draw_holes())
+        self.holes.bind("<Configure>", lambda e: self._request_draw_holes())
         self.note = tk.Text(mid, wrap=tk.CHAR, state=tk.DISABLED, height=1,
                             padx=18, pady=14, relief=tk.FLAT,
                             highlightthickness=0, spacing2=2)
@@ -470,6 +470,19 @@ class AdvisorGUI:
             self.cmd_entry.insert(0, self.cmd_hist[self.cmd_hist_idx])
         return "break"
 
+    def _request_draw_holes(self):
+        """_draw_holes は穴を全部描き直す(delete して作り直す)ので、
+        タブの切り替えなどで <Configure> が連続して何度も飛んでくると
+        そのたびに全部作り直してしまい遅くなる。after_idle でまとめる。"""
+        if getattr(self, "_holes_pending", False):
+            return
+        self._holes_pending = True
+
+        def go():
+            self._holes_pending = False
+            self._draw_holes()
+        self.root.after_idle(go)
+
     def _draw_holes(self):
         # ノート本文の左と、書き込み欄の左と、両方に同じ穴を敷く
         # (書き込み欄までルーズリーフの続きに見えるように)
@@ -589,7 +602,8 @@ class AdvisorGUI:
             descent = fm.metrics("descent")
         except Exception:
             ascent, descent = int(f[1] * 0.9), int(f[1] * 0.25)
-        S = max(8, int(round(f[1] * 0.6)))   # 罫線ぶんのすき間
+        S = max(14, int(round(f[1] * 1.1)))   # 罫線ぶんのすき間(狭すぎて文字と
+                                               # くっついて見えるとの指摘で拡大)
         self._font_ascent = ascent
         self._font_descent = descent
         self.pitch = ascent + descent + S
