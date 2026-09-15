@@ -240,10 +240,12 @@ class AdvisorGUI:
         # (左の穴の分だけ、ここでの余白は小さくてよい)
         self.entry.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(10, 4), pady=6)
         self.entry.bind("<Return>", self._on_return)
-        # プレースホルダーは「実際にキーを打った時」だけ消す(フォーカスだけで
-        # 消すと、パスフレーズのダイアログを閉じた直後などフォーカスが
-        # ふっと戻っただけで消えてしまい、「消えてる」と誤解されるため)。
-        self.entry.bind("<Key>", self._entry_clear_placeholder)
+        # プレースホルダーは <<Modified>> (中身が実際に変わった後の通知)
+        # で消す。<Key> で消していたときは、日本語入力(IME)が変換を
+        # 始める前の生のキー入力に割り込む形になり、1文字目だけ英字の
+        # まま入ってしまう不具合があった。<<Modified>> は挿入が確定
+        # した後に飛ぶのでIMEの変換を邪魔しない。
+        self.entry.bind("<<Modified>>", self._entry_on_modified)
         self.entry.bind("<FocusOut>", self._entry_focus_out)
         self._entry_ph = False
         self.send_btn = tk.Button(self.inbar, text="送信", width=6,
@@ -568,19 +570,20 @@ class AdvisorGUI:
         # resize 等の節目(after_idle 経由)だけなので、前にあった
         # 「描画の途中で聞いてズレる」問題は起きない。
         # 文字は下の線のすぐ上に乗り、次の行までは広めに余白を残す。
-        first = None
+        # (まだ上寄り、との指摘で clearance をだいぶ増やした)
+        gap = max(1, pitch - ascent - descent)
+        clearance = min(gap - 3, max(6, int(round(gap * 0.6))))
+        baseline = None
         try:
             top_idx = self.note.index("@0,0")
             info = self.note.dlineinfo(top_idx)
-            if info:
+            if info and info[4] > 0:
                 baseline = info[4]
-                if baseline > 0:
-                    first = pad + baseline + max(2, int(round(descent * 0.6)))
         except tk.TclError:
             pass
-        if first is None:
-            gap = max(1, pitch - ascent - descent)
-            first = pad + ascent + descent + max(2, gap // 5)
+        if baseline is None:
+            baseline = ascent
+        first = pad + baseline + clearance
         need = max(0, int((h - first) // pitch) + 1)
 
         while len(self._rule_lines) < need:
@@ -1040,11 +1043,26 @@ class AdvisorGUI:
         t = THEMES[self.theme_name]
         self.entry.config(fg=(t["dim"] if self._entry_ph else t["input_fg"]))
 
-    def _entry_clear_placeholder(self, _event=None):
-        if self._entry_ph:
+    def _entry_on_modified(self, _event=None):
+        # <<Modified>> は自分の delete/insert(プレースホルダーの表示自体)
+        # でも飛んでくるので、毎回まずフラグを下ろす(でないと二度と
+        # 発火しなくなる)。
+        self.entry.edit_modified(False)
+        if not self._entry_ph:
+            return
+        cur = self.entry.get("1.0", "end-1c")
+        if cur == ENTRY_PLACEHOLDER:
+            return   # プレースホルダーを表示しただけ(自分の変更)
+        # 実際に何か入力された。カーソルは表示時にプレースホルダーの
+        # 末尾にあるはずなので、普通は「プレースホルダー+打った文字」に
+        # なっている。プレースホルダー部分だけ取り除いて、打った分を残す。
+        if cur.startswith(ENTRY_PLACEHOLDER):
+            typed = cur[len(ENTRY_PLACEHOLDER):]
             self.entry.delete("1.0", tk.END)
-            self._entry_ph = False
-            self._entry_apply_ph_color()
+            if typed:
+                self.entry.insert("1.0", typed)
+        self._entry_ph = False
+        self._entry_apply_ph_color()
 
     def _entry_focus_out(self, _event=None):
         if not self.entry.get("1.0", "end-1c").strip():
