@@ -559,24 +559,31 @@ class AdvisorGUI:
         ascent = getattr(self, "_font_ascent", int(self.font[1] * 0.9))
         descent = getattr(self, "_font_descent", int(self.font[1] * 0.25))
 
-        # 罫線の基準位置は「今画面のいちばん上に見えている行」を実測して
-        # 決める。dlineinfo の ly はスクロール後の実際の画面Y座標を返す
-        # ので、pad(先頭行の上の余白)を足すのは間違いだった―スクロール
-        # した後は先頭行が画面上端に来るわけではないので、そのぶんズレて
-        # いた。ly をそのまま使えばスクロール位置に関係なく合う。
+        # 罫線の基準位置は、指標からの推定に頼らず「今画面に実際に見えて
+        # いる、隣り合う2行」を直接実測して決める。1行だけ測って
+        # ascent/descent の推定で次の行の位置を計算する方式は、狙いと
+        # 逆に見えるという指摘が続いたため取りやめた。2行分の実際の
+        # 画面Y座標が分かれば、その"すき間"のどこに線を置くかを直接
+        # 指定でき、推定の誤差が入り込む余地がない。
         gap = max(1, pitch - ascent - descent)
-        # 「文字のすぐ下」を小さい clearance(=すき間の頭のほう)で狙ったが
-        # 逆に上寄りに見える、との指摘が2回続いた。理屈より見え方を優先し、
-        # 向きを反転: すき間の終わりのほう(次の行の直前)に置く。
-        clearance = max(3, gap - max(3, int(round(descent * 0.8)) + 2))
         first = None
         try:
             top_idx = self.note.index("@0,0")
-            info = self.note.dlineinfo(top_idx)
-            if info:
-                _x, ly, _w, _lh, baseline = info
-                if baseline > 0:
-                    first = ly + baseline + clearance
+            info0 = self.note.dlineinfo(top_idx)
+            if info0:
+                y0, h0, base0 = info0[1], info0[3], info0[4]
+                next_idx = self.note.index("@0,%d" % (y0 + h0 + 1))
+                info1 = self.note.dlineinfo(next_idx)
+                if info1 and info1[1] > y0:
+                    y1 = info1[1]
+                    text_bottom = y0 + base0 + descent   # 1行目の文字の下端
+                    real_gap = y1 - text_bottom
+                    if real_gap > 3:
+                        # すき間の後ろのほう(次の行に近い側)に線を置く=
+                        # 「下の罫線に文字を沿わせる」向き
+                        first = text_bottom + int(round(real_gap * 0.9))
+                    else:
+                        first = y1 - 2
         except tk.TclError:
             pass
         if first is None:
@@ -584,7 +591,7 @@ class AdvisorGUI:
                 pad = int(str(self.note.cget("pady")) or 0)
             except ValueError:
                 pad = 14
-            first = pad + ascent + descent + clearance
+            first = pad + ascent + descent + int(round(gap * 0.9))
         need = max(0, int((h - first) // pitch) + 1)
 
         while len(self._rule_lines) < need:
