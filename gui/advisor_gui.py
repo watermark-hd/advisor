@@ -124,15 +124,21 @@ _S = {
     "menu_minimize": ("しまう", "Minimize"),
     # 初回起動時、APIキー未登録のときに出す案内画面
     "onboard_intro": (
-        "はじめまして。Advisorを使うには、Gemini(無料)かAnthropic(有料)の"
-        "どちらかのAPIキーが必要です。まずはGeminiの無料枠で気軽に始められます。",
-        "Welcome. To use Advisor, you'll need an API key from either Gemini "
-        "(free) or Anthropic (paid). Gemini's free tier is a good way to "
-        "start without any cost.",
+        "はじめまして。AdvisorはAIとやり取りするためのアプリです。使うには"
+        "「APIキー」というあなた専用の利用許可コード(パスワードのような"
+        "もの)が必要です。下のGeminiなら無料で今すぐ発行できます。",
+        "Welcome. Advisor is an app for talking with AI. To use it, you'll "
+        "need an \"API key\" — a personal permission code (think of it like "
+        "a password). Gemini below lets you get one free, right now.",
     ),
     "onboard_gemini": ("Gemini(無料)", "Gemini (free)"),
     "onboard_anthropic": ("Anthropic(有料)", "Anthropic (paid)"),
-    "onboard_key_label": ("APIキー:", "API key:"),
+    "onboard_key_get_here": (
+        "① まずAPIキー(利用許可コード)を取得してください:",
+        "① First, get your API key (permission code):",
+    ),
+    "onboard_open_key_page": ("🔑 APIキーを取得するページを開く", "🔑 Open the API key page"),
+    "onboard_key_label": ("② 取得したAPIキーをここに貼り付け:", "② Paste your API key here:"),
     "onboard_start": ("はじめる", "Get Started"),
     "onboard_checking": ("確認しています…", "Checking…"),
     "onboard_err_empty": ("APIキーを入力してください。", "Please enter an API key."),
@@ -446,7 +452,7 @@ class AdvisorGUI:
             pady=(0, 20), padx=40)
 
         provider_row = tk.Frame(frame, bg=bg)
-        provider_row.pack(pady=(0, 6))
+        provider_row.pack(pady=(0, 10))
         tk.Radiobutton(provider_row, text=L("onboard_gemini"),
                         variable=self._onboard_provider, value="gemini", bg=bg,
                         command=self._onboard_update_link,
@@ -456,20 +462,27 @@ class AdvisorGUI:
                         command=self._onboard_update_link,
                         font=("Helvetica", 12)).pack(side=tk.LEFT, padx=8)
 
-        self._onboard_link = tk.Label(frame, text="", fg="#1a5fb4", bg=bg,
+        tk.Label(frame, text=L("onboard_key_get_here"), font=("Helvetica", 13, "bold"),
+                 bg=bg, fg="#2b2b2b").pack(pady=(4, 8))
+
+        # 非技術者にも「押せるボタン」だと一目で分かるよう、生のURLではなく
+        # 色付き・大きめのボタン風ラベルにする(小さい下線リンクだと
+        # 見落とされやすいとのフィードバックを受けて)。
+        self._onboard_link = tk.Label(frame, text="", fg="#ffffff", bg="#1a5fb4",
                                        cursor="pointinghand",
-                                       font=("Helvetica", 11, "underline"))
-        self._onboard_link.pack(pady=(0, 18))
+                                       font=("Helvetica", 16, "bold"),
+                                       padx=18, pady=10)
+        self._onboard_link.pack(pady=(0, 22))
         self._onboard_link.bind("<Button-1>", lambda e: webbrowser.open(self._onboard_url))
         self._onboard_update_link()
 
         key_row = tk.Frame(frame, bg=bg)
         key_row.pack(pady=(0, 10))
         tk.Label(key_row, text=L("onboard_key_label"), bg=bg,
-                 font=("Helvetica", 12)).pack(side=tk.LEFT, padx=(0, 6))
+                 font=("Helvetica", 12)).pack(side=tk.TOP, anchor="w", pady=(0, 4))
         self._onboard_key_entry = tk.Entry(key_row, width=40, show="•",
-                                            font=("Helvetica", 12))
-        self._onboard_key_entry.pack(side=tk.LEFT)
+                                            font=("Helvetica", 13))
+        self._onboard_key_entry.pack(side=tk.TOP)
         self._onboard_key_entry.bind("<Return>", lambda e: self._onboard_start())
         self._onboard_key_entry.focus_set()
 
@@ -491,7 +504,7 @@ class AdvisorGUI:
             self._onboard_url = "https://aistudio.google.com/apikey"
         else:
             self._onboard_url = "https://console.anthropic.com/"
-        self._onboard_link.config(text=self._onboard_url)
+        self._onboard_link.config(text=L("onboard_open_key_page"))
 
     def _onboard_start(self):
         key = self._onboard_key_entry.get().strip()

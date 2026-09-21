@@ -2,3 +2,5 @@
 *.rtf
 __pycache__/
 *.pyc
+/dist/
+.standalone-app-build/
