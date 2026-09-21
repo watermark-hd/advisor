@@ -88,8 +88,6 @@ my %S = (
     need_key            => ["%s を設定してください\n", "Please set %s\n"],
     unknown_provider    => ["不明なプロバイダ: '%s' (anthropic か gemini)\n",
                              "Unknown provider: '%s' (anthropic or gemini)\n"],
-    key_not_registered  => ["%s が未登録です。setup.sh でそのAIのキーを登録してください。",
-                             "%s is not set yet. Run setup.sh to register that AI's key."],
     cannot_connect      => ["サーバーに接続できませんでした。通信環境を確認して、もう一度どうぞ。\n",
                              "Could not reach the server. Please check your connection and try again.\n"],
     api_error           => ["APIエラー (HTTP %s): %s\n", "API error (HTTP %s): %s\n"],
@@ -393,11 +391,22 @@ sub switch_provider {
 
     my $key_name = $target eq 'gemini' ? 'GEMINI_API_KEY' : 'ANTHROPIC_API_KEY';
 
-    # GUI モードでは、その場でのキー入力はまだ用意していない。
-    # setup.sh で登録してもらう。
+    # GUIモードでは、GUI側にキー取得ページの案内・入力・疎通確認まで
+    # 任せ、検証済みのキーを {"t":"key","value":...} で受け取る
+    # (need_passphraseと同じ「投げて待つ」パターン)。
     if ($GUI) {
-        emit_error(L('key_not_registered', $key_name));
-        return 0;
+        gui_send({ t => 'need_key', provider => $target, key_name => $key_name });
+        my $r = gui_read_typed('key');
+        return 0 unless $r;                # EOF/終了
+        my $key = $r->{value};
+        if (!defined $key || $key eq '') {
+            return 0;                       # キャンセル
+        }
+        $ENV{$key_name} = $key;
+        eval { configure_provider($target) };
+        if ($@) { emit_error(L('switch_failed', $@)); return 0; }
+        persist_env($key_name, $key);
+        return 1;
     }
 
     my $key = read_secret(L('key_missing_prompt', $key_name));

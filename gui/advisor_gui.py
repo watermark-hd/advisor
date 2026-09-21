@@ -146,6 +146,14 @@ _S = {
         "APIキーを確認できませんでした(HTTP {code})。キーが正しいかご確認ください。",
         "Couldn't verify the API key (HTTP {code}). Please check that it's correct.",
     ),
+    # 会話中に、まだキーを登録していないAIへ切り替えようとしたときの案内
+    "switch_key_title": ("APIキーの登録", "Register API Key"),
+    "switch_key_intro": (
+        "{provider}にはまだAPIキーが登録されていません。取得して貼り付ければ、"
+        "そのまま切り替えます。",
+        "There's no API key registered for {provider} yet. Get one and paste "
+        "it in, and we'll switch right over.",
+    ),
 }
 
 
@@ -1406,8 +1414,10 @@ class AdvisorGUI:
     def _handle(self, obj):
         t = obj.get("t")
         if t == "ready":
-            # _set_model がモデル名の短縮表示に models リストのラベルを
-            # 使うため、先に _fill_menu でキャッシュしておく。
+            # _fill_menu は self._current_model_id を見て「← 使用中」を
+            # 付けるので、_set_model を呼ぶより先に自分でセットしておく
+            # (_set_model 自体は後段の短縮表示更新のために引き続き呼ぶ)。
+            self._current_model_id = obj.get("model", "")
             self._fill_menu(obj.get("models", []))
             self._set_model(obj.get("provider", ""), obj.get("model", ""))
             hist = L("history_encrypted") if obj.get("history") else L("history_off")
@@ -1442,6 +1452,8 @@ class AdvisorGUI:
                                  recover=bool(obj.get("recover")))
         elif t == "need_recovery":
             self._ask_recovery(obj.get("mode", "new"), obj.get("question", ""))
+        elif t == "need_key":
+            self._ask_provider_key(obj.get("provider", ""))
         elif t == "history_list":
             self._show_history_dialog(obj.get("items", []))
         elif t == "history_loaded":
@@ -1553,6 +1565,72 @@ class AdvisorGUI:
         dlg.protocol("WM_DELETE_WINDOW",
                      lambda: (self._write({"t": "recovery", "question": "", "answer": ""}),
                               dlg.destroy()))
+
+    def _ask_provider_key(self, provider):
+        # 会話中に、まだキーを登録していないAIへ切り替えようとしたときの
+        # 案内ダイアログ。オンボーディング画面と同じ「大きなボタン→貼り付け
+        # →疎通確認」の流れをモーダルダイアログにしたもの。
+        display = "Gemini" if provider == "gemini" else "Anthropic (Claude)"
+        url = ("https://aistudio.google.com/apikey" if provider == "gemini"
+               else "https://console.anthropic.com/")
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title(L("switch_key_title"))
+        dlg.transient(self.root)
+        dlg.grab_set()
+
+        tk.Label(dlg, text=L("switch_key_intro", provider=display),
+                 wraplength=380, justify=tk.LEFT).pack(padx=18, pady=(16, 12))
+
+        link = tk.Label(dlg, text=L("onboard_open_key_page"), fg="#ffffff",
+                         bg="#1a5fb4", cursor="pointinghand",
+                         font=("Helvetica", 14, "bold"), padx=14, pady=8)
+        link.pack(pady=(0, 16))
+        link.bind("<Button-1>", lambda e: webbrowser.open(url))
+
+        tk.Label(dlg, text=L("onboard_key_label")).pack(anchor="w", padx=18)
+        key_var = tk.StringVar()
+        ent = tk.Entry(dlg, textvariable=key_var, show="•", width=36)
+        ent.pack(padx=18, pady=(2, 6))
+        ent.focus_set()
+
+        status = tk.Label(dlg, text="", fg="#a33", wraplength=380)
+        status.pack(padx=18, pady=(2, 4))
+
+        def cancel():
+            self._write({"t": "key", "value": ""})
+            dlg.destroy()
+
+        def submit(_=None):
+            key = key_var.get().strip()
+            if not key:
+                status.config(fg="#a33", text=L("onboard_err_empty"))
+                return
+            btn.config(state=tk.DISABLED)
+            status.config(fg="#2b2b2b", text=L("onboard_checking"))
+            threading.Thread(target=self._provider_key_validate_thread,
+                              args=(provider, key, dlg, status, btn), daemon=True).start()
+
+        ent.bind("<Return>", submit)
+        btnf = tk.Frame(dlg)
+        btnf.pack(pady=(2, 16))
+        btn = tk.Button(btnf, text=L("onboard_start"), command=submit)
+        btn.pack(side=tk.LEFT, padx=4)
+        tk.Button(btnf, text=L("cancel"), command=cancel).pack(side=tk.LEFT, padx=4)
+        dlg.protocol("WM_DELETE_WINDOW", cancel)
+
+    def _provider_key_validate_thread(self, provider, key, dlg, status, btn):
+        ok, code = validate_api_key(provider, key)
+        self.root.after(0, lambda: self._provider_key_validate_done(
+            ok, code, provider, key, dlg, status, btn))
+
+    def _provider_key_validate_done(self, ok, code, provider, key, dlg, status, btn):
+        if not ok:
+            btn.config(state=tk.NORMAL)
+            status.config(fg="#a33", text=L("onboard_err_api", code=code))
+            return
+        self._write({"t": "key", "value": key})
+        dlg.destroy()
 
     # ---------- 続きから(過去の会話) ----------
     def _show_history_dialog(self, items):
