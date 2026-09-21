@@ -1,6 +1,6 @@
 # Advisor
 
-**[English README is here / 英語版はこちら →](README.en.md)**
+[![Read in English](https://img.shields.io/badge/README-English-blue?style=for-the-badge)](README.en.md)
 
 <img src="launcher/advisor.png" alt="Advisor" width="120">
 
