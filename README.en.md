@@ -68,6 +68,10 @@ faces depending on your mood.
   automatically.
 - **Double-clickable `Advisor.app`** — no terminal experience required.
   Drop it in the Dock and you're one click away every time.
+- **API key setup happens right inside the GUI** — if no key is registered
+  yet the first time you launch, you get an in-app screen instead of a
+  terminal prompt. Pick a provider, click a button to open the key page,
+  paste it in — done. No terminal window, ever.
 
 ## Supported OS tiers
 
@@ -81,6 +85,26 @@ faces depending on your mood.
 
 ## Setup (Tier B: High Sierra and similar)
 
+There are two ways to get going. If you're not comfortable with a terminal,
+go with ①. If you're a developer or don't mind the command line, ② works
+too.
+
+### ① Download and go (no terminal needed)
+
+1. Grab **`Advisor-v0.1-standalone.zip`** from the
+   [latest release](https://github.com/watermark-hd/advisor/releases/latest)
+   and unzip it
+2. Drag the `Advisor.app` inside into your `Applications` folder (or the
+   Dock)
+3. Double-click to launch
+
+The first launch shows an in-app screen for registering your API key — no
+terminal window ever opens.
+
+### ② From source (terminal, for developers)
+
+Download (or `git clone`) this whole repository, then:
+
 ```bash
 bash setup.sh
 ```
@@ -90,6 +114,8 @@ saving an API key, installing the `advisor` command, setting up bash
 completion, building the double-clickable `Advisor.app`, and checking that
 the API actually responds — all in one pass. Once it's done, open a new
 Terminal window (or run `source ~/.bash_profile`) and just type `advisor`.
+The `Advisor.app` this builds also shows the same in-GUI setup screen if no
+key is registered yet, same as ①.
 
 > `Advisor.app` is built with [py2app](https://py2app.readthedocs.io/). The
 > first run automatically installs Xcode Command Line Tools (needed for code
@@ -103,6 +129,11 @@ Terminal window (or run `source ~/.bash_profile`) and just type `advisor`.
 
 Double-click `Advisor.app`, or run `advisor gui` — either way, the GUI opens
 directly with no terminal window.
+
+**If no API key is registered yet**, you'll see a setup screen instead of
+the normal chat view. Pick Gemini (free) or Anthropic (paid), click the
+button to open the key page, paste your key in, and it verifies the
+connection right there before dropping you into the normal screen.
 
 - The **[ Chat ] [ Command ]** tabs at the top switch between the AI
   conversation screen and a shell command panel.
