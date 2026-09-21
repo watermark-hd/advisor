@@ -102,7 +102,7 @@ too.
    double-click works every time.
 
 The first launch shows an in-app screen for registering your API key — no
-terminal window, ever. The zip also includes a "Read Me First.txt" with the
+terminal window, ever. The zip also includes a "ReadMe_EN.txt" with the
 same instructions.
 
 ### ② From source (terminal, for developers)
