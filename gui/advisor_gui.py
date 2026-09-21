@@ -19,10 +19,13 @@ import json
 import os
 import queue
 import re
+import shutil
 import signal
 import subprocess
+import sys
 import threading
 import tkinter as tk
+import webbrowser
 from tkinter import font as tkfont
 from tkinter import messagebox
 
@@ -119,6 +122,24 @@ _S = {
     "menu_select_all": ("すべてを選択", "Select All"),
     "menu_window": ("ウインドウ", "Window"),
     "menu_minimize": ("しまう", "Minimize"),
+    # 初回起動時、APIキー未登録のときに出す案内画面
+    "onboard_intro": (
+        "はじめまして。Advisorを使うには、Gemini(無料)かAnthropic(有料)の"
+        "どちらかのAPIキーが必要です。まずはGeminiの無料枠で気軽に始められます。",
+        "Welcome. To use Advisor, you'll need an API key from either Gemini "
+        "(free) or Anthropic (paid). Gemini's free tier is a good way to "
+        "start without any cost.",
+    ),
+    "onboard_gemini": ("Gemini(無料)", "Gemini (free)"),
+    "onboard_anthropic": ("Anthropic(有料)", "Anthropic (paid)"),
+    "onboard_key_label": ("APIキー:", "API key:"),
+    "onboard_start": ("はじめる", "Get Started"),
+    "onboard_checking": ("確認しています…", "Checking…"),
+    "onboard_err_empty": ("APIキーを入力してください。", "Please enter an API key."),
+    "onboard_err_api": (
+        "APIキーを確認できませんでした(HTTP {code})。キーが正しいかご確認ください。",
+        "Couldn't verify the API key (HTTP {code}). Please check that it's correct.",
+    ),
 }
 
 
@@ -218,11 +239,135 @@ def pick_font(family, size):
     return (family, size)
 
 
-def find_advisor():
-    for c in (os.path.expanduser("~/bin/advisor"), "/usr/local/bin/advisor"):
-        if os.path.isfile(c) and os.access(c, os.X_OK):
-            return c
-    return "advisor"
+ENV_FILE_PATH = os.path.expanduser("~/.claude-agent-env")
+
+
+def read_env_file():
+    # ~/.claude-agent-env の "export VAR=値" 形式を辞書にして返す。
+    result = {}
+    try:
+        with open(ENV_FILE_PATH, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line.startswith("export "):
+                    continue
+                k, sep, v = line[len("export "):].partition("=")
+                if sep:
+                    result[k.strip()] = v.strip()
+    except Exception:
+        pass
+    return result
+
+
+def has_valid_api_key():
+    env = read_env_file()
+    provider = env.get("CLAUDE_PROVIDER", "")
+    if provider == "gemini":
+        return bool(env.get("GEMINI_API_KEY"))
+    if provider == "anthropic":
+        return bool(env.get("ANTHROPIC_API_KEY"))
+    return False
+
+
+def _bundled_resource_dir():
+    # setup.shでビルドした場合は自分自身(advisor_gui.py)と同じフォルダに
+    # claude-agent.pl / models.txt が既にある(~/claude-build/)。
+    # ダブルクリックだけで動く単体アプリ(py2appの標準ビルド)の場合は、
+    # アプリ本体の Contents/Resources/ に同梱されているはずなのでそちらを探す。
+    here = os.path.dirname(os.path.abspath(__file__))
+    if os.path.isfile(os.path.join(here, "claude-agent.pl")):
+        return here
+    try:
+        exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+        resources = os.path.normpath(os.path.join(exe_dir, "..", "Resources"))
+        if os.path.isfile(os.path.join(resources, "claude-agent.pl")):
+            return resources
+    except Exception:
+        pass
+    return None
+
+
+def ensure_backend_files():
+    # setup.shを一度も実行していない(=~/claude-buildが無い)環境でも、
+    # アプリに同梱したエージェント本体を~/claude-buildへ配置して動くようにする。
+    build_dir = os.path.expanduser("~/claude-build")
+    target_agent = os.path.join(build_dir, "claude-agent.pl")
+    target_models = os.path.join(build_dir, "models.txt")
+    if os.path.isfile(target_agent) and os.path.isfile(target_models):
+        return True
+    src = _bundled_resource_dir()
+    if src is None:
+        return False
+    try:
+        os.makedirs(build_dir, exist_ok=True)
+        if not os.path.isfile(target_agent):
+            shutil.copy(os.path.join(src, "claude-agent.pl"), target_agent)
+        if not os.path.isfile(target_models):
+            shutil.copy(os.path.join(src, "models.txt"), target_models)
+        return True
+    except Exception:
+        return False
+
+
+def build_backend_command_and_env():
+    # ~/bin/advisor(setup.shが生成するラッパー)があればそれを使う。
+    # 無ければ(=setup.shを実行していない)、同梱したエージェントを直接起動する。
+    wrapper = os.path.expanduser("~/bin/advisor")
+    if os.path.isfile(wrapper) and os.access(wrapper, os.X_OK):
+        return [wrapper, "gui"], None
+    if not ensure_backend_files():
+        return None, None
+    env = dict(os.environ)
+    env.update(read_env_file())
+    env.setdefault("CLAUDE_CURL", "curl")
+    env["CLAUDE_MODELS_FILE"] = os.path.expanduser("~/claude-build/models.txt")
+    agent = os.path.expanduser("~/claude-build/claude-agent.pl")
+    return ["perl", agent, "--gui"], env
+
+
+def validate_api_key(provider, api_key):
+    # setup.shの「疎通確認」と同じチェックをその場で行う。
+    if provider == "gemini":
+        url = ("https://generativelanguage.googleapis.com/v1beta/models/"
+               "gemini-3.5-flash-lite:generateContent")
+        headers = ["-H", "x-goog-api-key: %s" % api_key,
+                   "-H", "content-type: application/json"]
+        data = '{"contents":[{"parts":[{"text":"hi"}]}],"generationConfig":{"maxOutputTokens":8}}'
+    else:
+        url = "https://api.anthropic.com/v1/messages"
+        headers = ["-H", "x-api-key: %s" % api_key,
+                   "-H", "anthropic-version: 2023-06-01",
+                   "-H", "content-type: application/json"]
+        data = '{"model":"claude-sonnet-5","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}'
+    try:
+        out = subprocess.run(
+            ["curl", "-s", url] + headers + ["-d", data, "-w", "\n%{http_code}"],
+            capture_output=True, text=True, timeout=20,
+        )
+    except Exception:
+        return False, ""
+    text = out.stdout
+    _, _, code = text.rpartition("\n")
+    return code.strip() == "200", code.strip()
+
+
+def save_onboard_env(provider, api_key):
+    lines = []
+    try:
+        with open(ENV_FILE_PATH, encoding="utf-8") as f:
+            skip_prefixes = ("export CLAUDE_PROVIDER=", "export GEMINI_API_KEY=",
+                              "export ANTHROPIC_API_KEY=", "export CLAUDE_MODEL=")
+            lines = [l for l in f if not l.startswith(skip_prefixes)]
+    except Exception:
+        pass
+    keyvar = "GEMINI_API_KEY" if provider == "gemini" else "ANTHROPIC_API_KEY"
+    default_model = "gemini-3.5-flash-lite" if provider == "gemini" else "claude-sonnet-5"
+    lines.append("export CLAUDE_PROVIDER=%s\n" % provider)
+    lines.append("export %s=%s\n" % (keyvar, api_key))
+    lines.append("export CLAUDE_MODEL=%s\n" % default_model)
+    with open(ENV_FILE_PATH, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+    os.chmod(ENV_FILE_PATH, 0o600)
 
 
 def load_cfg():
@@ -271,13 +416,110 @@ class AdvisorGUI:
             self.theme_name = "paper"
 
         self._build_menubar()
+        self.root.after(50, self._localize_native_app_menu)
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        if has_valid_api_key():
+            self._start_main_ui()
+        else:
+            self._build_onboarding()
+
+    def _start_main_ui(self):
         self._build_ui()
         self._apply_theme(self.theme_name)
         self._write_show_marker()
         self._start_backend()
         self.root.after(80, self._pump)
-        self.root.after(50, self._localize_native_app_menu)
-        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    # ---------- 初回起動時、APIキー未登録なら出す案内画面 ----------
+    def _build_onboarding(self):
+        bg = "#fdf6e3"
+        self._onboard_provider = tk.StringVar(value="gemini")
+        frame = tk.Frame(self.root, bg=bg)
+        frame.pack(fill=tk.BOTH, expand=True)
+        self._onboard_frame = frame
+
+        tk.Label(frame, text="Advisor", font=("Helvetica", 28, "bold"),
+                 bg=bg, fg="#2b2b2b").pack(pady=(48, 6))
+        tk.Label(frame, text=L("onboard_intro"), font=("Helvetica", 13),
+                 bg=bg, fg="#2b2b2b", wraplength=440, justify=tk.LEFT).pack(
+            pady=(0, 20), padx=40)
+
+        provider_row = tk.Frame(frame, bg=bg)
+        provider_row.pack(pady=(0, 6))
+        tk.Radiobutton(provider_row, text=L("onboard_gemini"),
+                        variable=self._onboard_provider, value="gemini", bg=bg,
+                        command=self._onboard_update_link,
+                        font=("Helvetica", 12)).pack(side=tk.LEFT, padx=8)
+        tk.Radiobutton(provider_row, text=L("onboard_anthropic"),
+                        variable=self._onboard_provider, value="anthropic", bg=bg,
+                        command=self._onboard_update_link,
+                        font=("Helvetica", 12)).pack(side=tk.LEFT, padx=8)
+
+        self._onboard_link = tk.Label(frame, text="", fg="#1a5fb4", bg=bg,
+                                       cursor="pointinghand",
+                                       font=("Helvetica", 11, "underline"))
+        self._onboard_link.pack(pady=(0, 18))
+        self._onboard_link.bind("<Button-1>", lambda e: webbrowser.open(self._onboard_url))
+        self._onboard_update_link()
+
+        key_row = tk.Frame(frame, bg=bg)
+        key_row.pack(pady=(0, 10))
+        tk.Label(key_row, text=L("onboard_key_label"), bg=bg,
+                 font=("Helvetica", 12)).pack(side=tk.LEFT, padx=(0, 6))
+        self._onboard_key_entry = tk.Entry(key_row, width=40, show="•",
+                                            font=("Helvetica", 12))
+        self._onboard_key_entry.pack(side=tk.LEFT)
+        self._onboard_key_entry.bind("<Return>", lambda e: self._onboard_start())
+        self._onboard_key_entry.focus_set()
+
+        self._onboard_btn = tk.Label(frame, text=L("onboard_start"),
+                                      cursor="pointinghand",
+                                      font=("Helvetica", 13, "bold"), bg=bg,
+                                      fg="#2b2b2b", padx=14, pady=4,
+                                      highlightthickness=1,
+                                      highlightbackground="#2b2b2b")
+        self._onboard_btn.pack(pady=(6, 10))
+        self._onboard_btn.bind("<Button-1>", lambda e: self._onboard_start())
+
+        self._onboard_status = tk.Label(frame, text="", bg=bg, fg="#a33",
+                                         font=("Helvetica", 11), wraplength=440)
+        self._onboard_status.pack(pady=(4, 20))
+
+    def _onboard_update_link(self):
+        if self._onboard_provider.get() == "gemini":
+            self._onboard_url = "https://aistudio.google.com/apikey"
+        else:
+            self._onboard_url = "https://console.anthropic.com/"
+        self._onboard_link.config(text=self._onboard_url)
+
+    def _onboard_start(self):
+        key = self._onboard_key_entry.get().strip()
+        if not key:
+            self._onboard_status.config(fg="#a33", text=L("onboard_err_empty"))
+            return
+        provider = self._onboard_provider.get()
+        self._onboard_btn.config(state=tk.DISABLED)
+        self._onboard_status.config(fg="#2b2b2b", text=L("onboard_checking"))
+        threading.Thread(target=self._onboard_validate_thread,
+                          args=(provider, key), daemon=True).start()
+
+    def _onboard_validate_thread(self, provider, key):
+        ok, code = validate_api_key(provider, key)
+        self.root.after(0, lambda: self._onboard_validate_done(ok, code, provider, key))
+
+    def _onboard_validate_done(self, ok, code, provider, key):
+        self._onboard_btn.config(state=tk.NORMAL)
+        if not ok:
+            self._onboard_status.config(fg="#a33", text=L("onboard_err_api", code=code))
+            return
+        try:
+            save_onboard_env(provider, key)
+        except Exception as e:
+            self._onboard_status.config(fg="#a33", text=L("internal_error", err=e))
+            return
+        self._onboard_frame.destroy()
+        self._start_main_ui()
 
     # ---------- macOSメニューバー(画面最上部のOSメニュー。アプリ内
     # ヘッダーの[ 会話 ][ コマンド ]等とは別物) ----------
@@ -1095,9 +1337,15 @@ class AdvisorGUI:
 
     # ---------- バックエンド ----------
     def _start_backend(self):
+        cmd, env = build_backend_command_and_env()
+        if cmd is None:
+            messagebox.showerror(L("cannot_start_title"),
+                                  L("cannot_start_body", err="claude-agent.pl"))
+            self.root.destroy()
+            return
         try:
             self.proc = subprocess.Popen(
-                [find_advisor(), "gui"],
+                cmd, env=env,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL, bufsize=1,
                 universal_newlines=True, encoding="utf-8",
