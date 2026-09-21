@@ -1,6 +1,6 @@
 # Advisor
 
-[![日本語版はこちら](https://img.shields.io/badge/README-日本語-red?style=for-the-badge)](README.md)
+## 🇯🇵 [日本語版はこちらから読めます →](README.md)
 
 <img src="launcher/advisor.png" alt="Advisor" width="120">
 
