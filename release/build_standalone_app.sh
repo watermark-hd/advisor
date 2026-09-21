@@ -92,8 +92,15 @@ mkdir -p "$OUT_DIR"
 rm -rf "$OUT_DIR/Advisor.app"
 cp -R "$BUILD_DIR/dist/Advisor.app" "$OUT_DIR/Advisor.app"
 
+# 初回起動時にmacOSの「開発元が未確認」警告(正式なApple Developer ID署名
+# ではなくad-hoc署名のため出る)への対処法を、zipを開いてすぐ目に入る
+# 場所に案内文として同梱する。
+cp "$SCRIPT_DIR/release/お読みください.txt" "$OUT_DIR/お読みください.txt"
+cp "$SCRIPT_DIR/release/Read Me First.txt" "$OUT_DIR/Read Me First.txt"
+
 ZIP_NAME="Advisor-v${VERSION}-standalone.zip"
-( cd "$OUT_DIR" && rm -f "$ZIP_NAME" && zip -r -q "$ZIP_NAME" Advisor.app )
+( cd "$OUT_DIR" && rm -f "$ZIP_NAME" && \
+  zip -r -q "$ZIP_NAME" Advisor.app "お読みください.txt" "Read Me First.txt" )
 
 echo ""
 echo "完成: $OUT_DIR/$ZIP_NAME"

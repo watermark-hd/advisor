@@ -94,12 +94,16 @@ too.
 1. Grab **`Advisor-v0.1-standalone.zip`** from the
    [latest release](https://github.com/watermark-hd/advisor/releases/latest)
    and unzip it
-2. Drag the `Advisor.app` inside into your `Applications` folder (or the
-   Dock)
-3. Double-click to launch
+2. Drag the `Advisor` inside into your `Applications` folder (or the Dock)
+3. **The very first time only**, instead of double-clicking, right-click
+   (or Control-click) it and choose "Open." macOS will warn that the
+   developer is unidentified (expected — this build isn't signed with a
+   paid Apple Developer ID yet) — click "Open" again. After that, a normal
+   double-click works every time.
 
 The first launch shows an in-app screen for registering your API key — no
-terminal window ever opens.
+terminal window, ever. The zip also includes a "Read Me First.txt" with the
+same instructions.
 
 ### ② From source (terminal, for developers)
 
