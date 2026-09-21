@@ -4,9 +4,9 @@
 advisor_gui.py  ―  advisor の1画面GUIフロントエンド
 
 裏で `advisor gui`(= perl claude-agent.pl --gui)を起動し、1行1件のJSONで
-やり取りする。入力は下のテキスト欄(OSの日本語入力がそのまま普通に使える。
-Terminal.app の2バイト文字バグを回避できる)、会話は上の"ノート"に交互に
-書かれていく。
+やり取りする。入力はノート下部の書き込み欄(OSの日本語入力がそのまま
+普通に使える。Terminal.app の2バイト文字バグを回避できる)、質問と回答は
+1枚のノートに交互に追記されていく(枠付きの入力ボックスは無い)。
 
 見た目は2つ:
   - ノート : 生成りの紙に書いていく感じ。相手の返答は2文字ぶん字下げ。
@@ -30,9 +30,112 @@ from tkinter import messagebox
 # すぐ右から書き始める、という要望に合わせた小さめの値。
 EDGE = 10
 
-# 書き込み欄が空のときに薄字で出しておく案内。「どこに書けばいいか
-# わからない」という声を受けて、クリックすると消えるプレースホルダーに。
-ENTRY_PLACEHOLDER = "ここに書いてください（Enterで送信）"
+# ---------- 言語 ----------
+# ダウンロードの7割が海外ユーザーとのことで日英対応が必須になった。
+# LANG環境変数はGUIアプリをダブルクリック起動した時に空になることが
+# あり(ログインシェルを経由しないため)あてにできない。macOS自体の
+# 言語設定を直接読む。判定できなければ、この項目の既存ユーザーに
+# 合わせて日本語を既定にする。ボタン文字は _S/L() で切り替えるだけで
+# レイアウト(padx等)自体は変えていないので、英語の方が長い/短い場合は
+# 別途ヘッダーの余白調整が要るかもしれない。
+def _detect_lang():
+    # CLAUDE_LANG=en/ja があれば最優先(システム言語を変えずに英語表示を
+    # 確認したいとき用)。
+    override = os.environ.get("CLAUDE_LANG", "").strip().lower()
+    if override in ("en", "ja"):
+        return override
+    try:
+        out = subprocess.check_output(
+            ["defaults", "read", "-g", "AppleLocale"],
+            stderr=subprocess.DEVNULL, timeout=2,
+        ).decode("utf-8", "replace").strip()
+        if out and not out.lower().startswith("ja"):
+            return "en"
+    except Exception:
+        pass
+    return "ja"
+
+
+LANG = _detect_lang()
+
+# key: (日本語, English)。フォーマット文字列は L(key, **kwargs) で埋める。
+_S = {
+    "tab_chat": ("会話", "Chat"),
+    "tab_cmd": ("コマンド", "Cmd"),
+    "hist_btn": ("続きから", "Resume"),
+    "switch_btn": ("AIを切替 ▾", "Switch AI ▾"),
+    "stop_btn": ("中止", "Stop"),
+    "write_mark": ("▶ ここに書いてください（Enterで送信）",
+                   "▶ Type here (Enter to send)"),
+    "busy_running": ("(実行中です。中止 ボタンか Ctrl-C で止めてください)\n",
+                      "(Already running. Use Stop or Ctrl-C.)\n"),
+    "no_such_folder": ("cd: そのフォルダはありません: {path}\n",
+                        "cd: no such folder: {path}\n"),
+    "cannot_run": ("実行できません: {err}\n", "Could not run: {err}\n"),
+    "history_encrypted": ("暗号化保存", "encrypted"),
+    "history_off": ("保存しない", "off"),
+    "ready_status": ("準備完了（履歴: {hist}）", "Ready (history: {hist})"),
+    "using_tool": ("— {name} を使います —", "— using {name} —"),
+    "confirm_title": ("確認", "Confirm"),
+    "confirm_body": ("AIが次のことをしようとしています:\n\n{prompt}\n\n許可しますか？",
+                      "The AI wants to do the following:\n\n{prompt}\n\nAllow it?"),
+    "passphrase_default": ("パスフレーズ", "Passphrase"),
+    "turn_end": ("[終了 {code}]\n", "[exit {code}]\n"),
+    "bye_status": ("advisor を終了しました", "advisor has exited"),
+    "querying_status": ("問い合わせ中…", "Thinking…"),
+    "starting_status": ("起動中…", "Starting…"),
+    "currently_using": ("  ← 使用中", "  ← current"),
+    "passphrase_title": ("パスフレーズ", "Passphrase"),
+    "ok": ("OK", "OK"),
+    "recover_with_answer": ("合言葉で復旧", "Recover with answer"),
+    "secret_title": ("合言葉", "Recovery answer"),
+    "secret_new_body": ("パスフレーズを忘れたときの復旧用です(必須)。\n"
+                         "あなたにしか答えられない質問にしてください。\n"
+                         "例: 初めて買った車の名前は？",
+                         "Used to recover if you forget your passphrase "
+                         "(required).\nPick a question only you can answer.\n"
+                         "Example: What was your first car?"),
+    "question_label": ("質問", "Question"),
+    "secret_unlock_body": ("合言葉で履歴を復旧します。", "Recover history with your answer."),
+    "question_prefix": ("質問: {q}", "Question: {q}"),
+    "answer_label": ("答え", "Answer"),
+    "resume_title": ("続きから", "Resume"),
+    "no_saved_history": ("保存された会話がありません。", "No saved conversations."),
+    "resume_pick": ("続きから始める会話を選んでください", "Choose a conversation to resume"),
+    "open": ("開く", "Open"),
+    "cancel": ("やめる", "Cancel"),
+    "resume_page": ("（{page}ページ目 / 全{total}ページ）", "(page {page} of {total})"),
+    "resume_loaded": ("（ここまで読み込みました。続きをどうぞ）",
+                       "(loaded up to here — continue below)"),
+    "cannot_start_title": ("起動できません", "Could not start"),
+    "cannot_start_body": ("advisor を起動できませんでした:\n{err}",
+                          "Could not start advisor:\n{err}"),
+    "internal_error": ("(内部エラー: {err})", "(internal error: {err})"),
+    # macOS メニューバー(画面最上部のOSメニュー。アプリ内ヘッダーとは別物)
+    "menu_edit": ("編集", "Edit"),
+    "menu_cut": ("切り取り", "Cut"),
+    "menu_copy": ("コピー", "Copy"),
+    "menu_paste": ("貼り付け", "Paste"),
+    "menu_select_all": ("すべてを選択", "Select All"),
+    "menu_window": ("ウインドウ", "Window"),
+    "menu_minimize": ("しまう", "Minimize"),
+}
+
+
+def L(key, **kw):
+    ja, en = _S[key]
+    s = en if LANG == "en" else ja
+    return s.format(**kw) if kw else s
+
+
+def theme_label(spec):
+    return spec.get("label_en", spec["label"]) if LANG == "en" else spec["label"]
+
+
+# 書き込み欄が空のときに出す案内。クリックすると全体が消えて先頭から
+# 書ける(_write_click_clear)。点滅する縦線のカーソルの代わりに、
+# 点滅だけ止めて(insertofftime=0)この矢印で書き始めの位置を示す。
+WRITE_MARK = L("write_mark")
 
 CFG_PATH = os.path.expanduser("~/.claude-agent/gui.json")
 
@@ -61,19 +164,25 @@ HL_TAG = {"str": "code_str", "com": "code_com", "num": "code_num", "kw": "code_k
 #   holes         = 左にルーズリーフの穴
 THEMES = {
     "paper": {
-        "label": "ノート", "handwriting": True, "holes": True,
-        "bg": "#f6efdc", "fg": "#243b6b", "ai": "#5a4636",   # 青黒インク / 茶
+        "label": "ノート", "label_en": "Note", "handwriting": True, "holes": True,
+        # 背景を少し明るく、文字(質問・回答とも)は逆にもう少し濃くして
+        # はっきりさせた(明るくした分そのままだとコントラストが落ちる
+        # ため。実際にはコントラスト比は上がっている: fg 9.57→12.5,
+        # ai 7.74→10.8)。
+        "bg": "#faf4e6", "fg": "#1a2c54", "ai": "#463420",   # 青黒インク / 茶
         "dim": "#9a8f78", "err": "#a5341f", "rule": "#d7b7ab", "code_bg": "#efe6cf",
         "line": "#c96b63",                                    # 昔のルーズリーフの赤い罫
-        # "hline": "#9fb0c9",     # 横罫線(紺グレー)。何度直しても安定しない
-                                  # ため一旦オフ。他の見た目はそのまま維持する
+        "hline": "#9fb0c9",     # 横罫線(紺グレー)。PhotoImageでの埋め込みは
+                                # このマシンで描画されなかったため、既に
+                                # 描けている縦罫(Canvas.create_line)と同じ
+                                # 実部品(tk.Frame)を使う方式に変更した
         "vline": "#c96b63",                                   # 左の縦罫(赤)。書き始めの目印
-        "input_bg": "#f6efdc", "input_fg": "#243b6b",
+        "input_bg": "#faf4e6", "input_fg": "#1a2c54",
         "hl": {"kw": "#7a3b8f", "str": "#8a5a2b", "com": "#9a8f78", "num": "#3a5a3a"},
         "font": ("Hiragino Maru Gothic ProN", 12),  # 少し小さめにして行数を稼ぐ
     },
     "coding": {
-        "label": "コーディング", "prompt_prefix": True,
+        "label": "コーディング", "label_en": "Code", "prompt_prefix": True,
         "bg": "#1e1e1e", "fg": "#d4d4d4", "ai": "#cfcfcf", "prompt": "#c586c0",
         "dim": "#7a7a7a", "err": "#f48771", "rule": "#3a3a3a", "code_bg": "#252526",
         "line": "#3a3a3a", "input_bg": "#1e1e1e", "input_fg": "#d4d4d4",
@@ -81,11 +190,13 @@ THEMES = {
         "font": ("Menlo", 13),
     },
     "hacker": {
-        "label": "ハッカー", "prompt_prefix": True,
-        "bg": "#000000", "fg": "#39ff5a", "ai": "#33dd88", "prompt": "#00e5ff",
+        "label": "ハッカー", "label_en": "Hacker", "prompt_prefix": True,
+        # エラー/終了コード(err)以外は全部緑にする、との要望。以前は
+        # promptとhl.kw/numがシアン系だったので緑に寄せた。
+        "bg": "#000000", "fg": "#39ff5a", "ai": "#33dd88", "prompt": "#00ff66",
         "dim": "#2e7d4f", "err": "#ff5555", "rule": "#2e9d55", "code_bg": "#041004",
         "line": "#2e9d55", "input_bg": "#000000", "input_fg": "#39ff5a",
-        "hl": {"kw": "#00e5ff", "str": "#9dff9d", "com": "#2e7d4f", "num": "#7fffd4"},
+        "hl": {"kw": "#00ff66", "str": "#9dff9d", "com": "#2e7d4f", "num": "#a8ffcb"},
         "font": ("Menlo", 13),
     },
 }
@@ -153,18 +264,115 @@ class AdvisorGUI:
         self.cwd = os.path.expanduser("~")      # コマンドパネルの現在地
         self.cmd_proc = None
         self.model_label_var = tk.StringVar(value="…")
-        self.status_var = tk.StringVar(value="起動中…")
+        self.status_var = tk.StringVar(value=L("starting_status"))
         self.cmd_prompt_var = tk.StringVar(value="")
         self.theme_name = load_cfg().get("theme", "paper")
         if self.theme_name not in THEMES:
             self.theme_name = "paper"
 
+        self._build_menubar()
         self._build_ui()
         self._apply_theme(self.theme_name)
-        self._entry_show_placeholder()
+        self._write_show_marker()
         self._start_backend()
         self.root.after(80, self._pump)
+        self.root.after(50, self._localize_native_app_menu)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    # ---------- macOSメニューバー(画面最上部のOSメニュー。アプリ内
+    # ヘッダーの[ 会話 ][ コマンド ]等とは別物) ----------
+    def _build_menubar(self):
+        menubar = tk.Menu(self.root)
+        self.root.config(menu=menubar)
+
+        # 先頭のアプリケーションメニュー(About/隠す/サービス/終了)はTk自身が
+        # バンドル名から自動で用意してくれるが、中身の文言はTk本体に
+        # コンパイル済みで埋め込まれた固定の英語で、OS言語設定にもここでの
+        # 翻訳にも反応しない(setAppleMenu:というCocoaの古いAPIでTkが自分で
+        # 登録してしまうため)。自前で"apple"という名前のメニューを追加しても
+        # マージされず、空の別メニューが並ぶだけだったので作らない。日本語化は
+        # _localize_native_app_menu() でOSネイティブメニューを直接書き換えて
+        # 行う。「終了」を選んだ時にきちんと後片付け(_on_close)されるように
+        # だけここでフックする。
+        self.root.createcommand("tk::mac::Quit", self._on_close)
+
+        edit_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label=L("menu_edit"), menu=edit_menu)
+        edit_menu.add_command(label=L("menu_cut"), accelerator="Cmd-X",
+                               command=lambda: self._menu_gen_event("<<Cut>>"))
+        edit_menu.add_command(label=L("menu_copy"), accelerator="Cmd-C",
+                               command=lambda: self._menu_gen_event("<<Copy>>"))
+        edit_menu.add_command(label=L("menu_paste"), accelerator="Cmd-V",
+                               command=lambda: self._menu_gen_event("<<Paste>>"))
+        edit_menu.add_separator()
+        edit_menu.add_command(label=L("menu_select_all"), accelerator="Cmd-A",
+                               command=self._menu_select_all)
+
+        # name="window" にするとTkが項目を自動生成してくれるが、その中身
+        # (Minimize/Zoom等)は英語固定で翻訳できない。自前の項目にする。
+        window_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label=L("menu_window"), menu=window_menu)
+        window_menu.add_command(label=L("menu_minimize"), accelerator="Cmd-M",
+                                 command=self.root.iconify)
+
+        self.root.createcommand("tk::mac::ReopenApplication", lambda: self.root.deiconify())
+
+    def _menu_gen_event(self, virtual):
+        w = self.root.focus_get()
+        if w is None:
+            return
+        try:
+            w.event_generate(virtual)
+        except Exception:
+            pass
+
+    def _menu_select_all(self):
+        w = self.root.focus_get()
+        if w is None:
+            return
+        try:
+            if isinstance(w, tk.Text):
+                w.tag_add("sel", "1.0", "end-1c")
+            elif isinstance(w, tk.Entry):
+                w.select_range(0, tk.END)
+        except Exception:
+            pass
+
+    def _localize_native_app_menu(self):
+        # Tkが自動生成するアプリケーションメニュー(About/隠す/サービス/終了)
+        # の中身は英語固定でTkからは書き換えられない(_build_menubar内の説明
+        # 参照)。pyobjc(py2appビルド時のみ同梱)が使える場合だけ、OSの
+        # ネイティブメニューを直接書き換えて日本語化する。無い環境では何も
+        # せず英語のまま(壊れはしない)。
+        if LANG != "ja":
+            return
+        try:
+            from AppKit import NSApplication
+        except Exception:
+            return
+        try:
+            main_menu = NSApplication.sharedApplication().mainMenu()
+            app_menu = main_menu.itemAtIndex_(0).submenu() if main_menu else None
+            if app_menu is None:
+                return
+            for item in app_menu.itemArray():
+                title = str(item.title())
+                if title.startswith("About "):
+                    item.setTitle_("%s について" % title[len("About "):])
+                elif title.startswith("Hide Others"):
+                    item.setTitle_("ほかを隠す")
+                elif title.startswith("Hide "):
+                    item.setTitle_("%s を隠す" % title[len("Hide "):])
+                elif title == "Show All":
+                    item.setTitle_("すべてを表示")
+                elif title == "Services":
+                    item.setTitle_("サービス")
+                elif title.startswith("Preferences"):
+                    item.setTitle_("環境設定…")
+                elif title.startswith("Quit "):
+                    item.setTitle_("%s を終了" % title[len("Quit "):])
+        except Exception:
+            pass
 
     # ---------- 画面 ----------
     def _build_ui(self):
@@ -175,10 +383,12 @@ class AdvisorGUI:
         # 見た目(枠付きの部品)を勝手に描いてしまい、relief や色を変えても
         # 反映されない。tk.Label + クリックの組み合わせにすると、Tk自身が
         # 描画するので好きな見た目(会話タブと同じ手書き風)にできる。
-        self.tab_chat = tk.Label(self.bar, text="会話", cursor="pointinghand", padx=3)
+        self.tab_chat = tk.Label(self.bar, text=L("tab_chat"), cursor="pointinghand", padx=3)
         self.tab_chat.bind("<Button-1>", lambda e: self._show_pane("chat"))
-        self.tab_chat.pack(side=tk.LEFT, padx=(8, 1), pady=2)
-        self.tab_cmd = tk.Label(self.bar, text="コマンド", cursor="pointinghand", padx=3)
+        # 左端の余白を赤線の始まり(padx=56)に合わせる(右端のボタン群を
+        # 揃えたのと同じ考え方)。
+        self.tab_chat.pack(side=tk.LEFT, padx=(56, 1), pady=2)
+        self.tab_cmd = tk.Label(self.bar, text=L("tab_cmd"), cursor="pointinghand", padx=3)
         self.tab_cmd.bind("<Button-1>", lambda e: self._show_pane("cmd"))
         self.tab_cmd.pack(side=tk.LEFT, padx=1, pady=2)
 
@@ -192,18 +402,20 @@ class AdvisorGUI:
         self._theme_choice = tk.StringVar(value=self.theme_name)
         for key, spec in THEMES.items():
             self.theme_menu.add_radiobutton(
-                label=spec["label"], value=key, variable=self._theme_choice,
+                label=theme_label(spec), value=key, variable=self._theme_choice,
                 command=lambda k=key: self._choose_theme(k))
-        self.theme_btn.pack(side=tk.RIGHT, padx=6, pady=3)
+        # 右端の余白を赤線の終わり(padx=56)に合わせる。ここが一番右端の
+        # ボタンなので、右側だけ追加で余白を足す。
+        self.theme_btn.pack(side=tk.RIGHT, padx=(6, 56), pady=3)
 
         # 幅は固定せず文字なりに(固定幅にすると文字が欠けて矢印と重なるため)
-        self.switch_btn = tk.Label(self.bar, text="AIを切替 ▾", cursor="pointinghand",
+        self.switch_btn = tk.Label(self.bar, text=L("switch_btn"), cursor="pointinghand",
                                    padx=8, pady=2)
         self.switch_menu = tk.Menu(self.switch_btn, tearoff=0)
         self.switch_btn.bind("<Button-1>", lambda e: self._popup_menu(self.switch_menu, self.switch_btn))
         self.switch_btn.pack(side=tk.RIGHT, padx=6, pady=3)
 
-        self.hist_btn = tk.Label(self.bar, text="続きから", cursor="pointinghand",
+        self.hist_btn = tk.Label(self.bar, text=L("hist_btn"), cursor="pointinghand",
                                  padx=8, pady=2)
         self.hist_btn.bind("<Button-1>", lambda e: self._write({"t": "list_history"}))
         self.hist_btn.pack(side=tk.RIGHT, padx=6, pady=3)
@@ -224,38 +436,46 @@ class AdvisorGUI:
         self.chat_pane = tk.Frame(self.pane_host)
         self.chat_pane.place(relx=0, rely=0, relwidth=1, relheight=1)
 
-        self.status_lbl = tk.Label(self.chat_pane, textvariable=self.status_var,
-                                   anchor=tk.W)
-        self.status_lbl.pack(side=tk.BOTTOM, fill=tk.X)
-        self.inbar = tk.Frame(self.chat_pane)
-        self.inbar.pack(side=tk.BOTTOM, fill=tk.X)
+        # ステータスバー。最下段、常に2行ぶんの高さを確保する
+        # (pack_propagate(False)で中身の量に関わらず高さを保つ)。
+        self.status_frame = tk.Frame(self.chat_pane)
+        self.status_frame.pack(side=tk.BOTTOM, fill=tk.X)
+        self.status_frame.pack_propagate(False)
+        self.status_lbl = tk.Label(self.status_frame, textvariable=self.status_var,
+                                   anchor=tk.NW, justify=tk.LEFT)
+        # 左端を赤線(上のin_ruleと同じpadx=56)の始まりに合わせる。
+        self.status_lbl.pack(fill=tk.BOTH, expand=True, padx=(56, 0))
+
         self.in_rule = tk.Frame(self.chat_pane, height=1)
         self.in_rule.pack(side=tk.BOTTOM, fill=tk.X, padx=56)
-        # 書き込み欄の左にもルーズリーフの穴を続ける(ノートの続きに見えるように)
-        self.entry_holes = tk.Canvas(self.inbar, width=36, highlightthickness=0)
-        self.entry_holes.pack(side=tk.LEFT, fill=tk.Y)
-        self.entry_holes.bind("<Configure>", lambda e: self._request_draw_holes())
-        self.entry = tk.Text(self.inbar, height=2, wrap=tk.CHAR,
-                             relief=tk.FLAT, highlightthickness=0, padx=8, pady=6)
-        # 書き込み欄の書き出しを、下の赤ラインの左端・解答の左端あたりに揃える
-        # (左の穴の分だけ、ここでの余白は小さくてよい)
-        self.entry.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(10, 4), pady=6)
-        self.entry.bind("<Return>", self._on_return)
-        # プレースホルダーは <<Modified>> (中身が実際に変わった後の通知)
-        # で消す。<Key> で消していたときは、日本語入力(IME)が変換を
-        # 始める前の生のキー入力に割り込む形になり、1文字目だけ英字の
-        # まま入ってしまう不具合があった。<<Modified>> は挿入が確定
-        # した後に飛ぶのでIMEの変換を邪魔しない。
-        self.entry.bind("<<Modified>>", self._entry_on_modified)
-        # クリックした瞬間にも消す(クリックはIMEに関係ないので安全)。
-        # これが無いと、プレースホルダーの途中をクリックしてから打った
-        # ときに文字がプレースホルダーの真ん中に混ざって残ってしまう。
-        self.entry.bind("<Button-1>", self._entry_click_clear)
-        self.entry.bind("<FocusOut>", self._entry_focus_out)
-        self._entry_ph = False
-        self.send_btn = tk.Button(self.inbar, text="送信", width=6,
-                                  command=self._send_current)
-        self.send_btn.pack(side=tk.LEFT, padx=(0, 8), pady=6)
+
+        # 書き込み欄。以前のような枠付きの箱+送信ボタンではなく、ノートの
+        # 続きに見える4行ぶんの領域(罫線・穴もノート本文と共通)。
+        # Enterで送信、Shift+Enterで改行。
+        self.write_row = tk.Frame(self.chat_pane)
+        self.write_row.pack(side=tk.BOTTOM, fill=tk.X)
+        self.write_holes = tk.Canvas(self.write_row, width=36, highlightthickness=0)
+        self.write_holes.pack(side=tk.LEFT, fill=tk.Y)
+        self.write_holes.bind("<Configure>", lambda e: self._request_draw_holes())
+        # 右端の手前(4文字ぶん)で折り返すための余白。固定サイズなので、
+        # write_zone(expand=True)より先にpackして場所を確保しておく
+        # (send_btnの件と同じ理由。順番を逆にすると場所が残らない)。
+        self.write_pad_right = tk.Frame(self.write_row, width=1)
+        self.write_pad_right.pack(side=tk.RIGHT, fill=tk.Y)
+        self.write_zone = tk.Text(self.write_row, height=4, wrap=tk.CHAR,
+                                  relief=tk.FLAT, highlightthickness=0, bd=0,
+                                  padx=18, pady=0)
+        self.write_zone.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.write_zone.bind("<Return>", self._on_return)
+        # プレースホルダー(矢印)は <<Modified>> (中身が実際に変わった後の
+        # 通知)で消す。<Key> で消すとIMEの変換前の生入力に割り込み、
+        # 1文字目だけ英字のまま入ってしまう不具合が過去にあったため。
+        self.write_zone.bind("<<Modified>>", self._write_on_modified)
+        self.write_zone.bind("<Button-1>", self._write_click_clear)
+        self.write_zone.bind("<FocusOut>", self._write_focus_out)
+        self.write_zone.bind(
+            "<Configure>", lambda e: self._request_draw_grid(self.write_zone, "_grid_write"))
+        self._write_ph = False
 
         mid = tk.Frame(self.chat_pane)
         mid.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
@@ -266,46 +486,58 @@ class AdvisorGUI:
                             padx=18, pady=14, relief=tk.FLAT,
                             highlightthickness=0, spacing2=2)
         sb = tk.Scrollbar(mid, command=self.note.yview)
-
-        def _note_scrolled(*args):
-            # 表示範囲が変わるたび(挿入・スクロールバー・マウスホイール
-            # すべてここを通る)に横罫線を引き直す。ズレを溜めない。
-            sb.set(*args)
-            self._request_draw_rules()
-        self.note.config(yscrollcommand=_note_scrolled)
+        self.note.config(yscrollcommand=sb.set)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
         self.note.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.note.bind("<Configure>", self._relayout)
+        self.note.bind(
+            "<Configure>",
+            lambda e: (self._relayout(e), self._request_draw_grid(self.note, "_grid_note")))
+        # トラックパッドの既定のスクロールは半端なpxで止まるため、罫線と
+        # 文字がその瞬間だけズレて見える。1行(=pitch)単位でしか止まら
+        # ないようにする。
+        self.note.bind("<MouseWheel>", self._on_note_wheel)
 
         # ================= コマンドペイン =================
-        # 見た目はテーマに関係なく端末風(黒地)で固定。scp/ssh 用。
-        CB, CF, CIN, CERR, CDIM = "#0f1115", "#d6d6d6", "#4ec9e6", "#ff6b6b", "#7a8088"
+        # 背景は黒地(端末風)でテーマに関係なく固定。文字色だけ
+        # _style_cmd_pane() でテーマに合わせて変える(ハッカーなら緑、
+        # それ以外は既定の配色)。ここでは初期値としてCBだけ使う。
+        self.CB = CB = "#0f1115"
+        CF = CIN = CERR = CDIM = CSUCCESS = "#d6d6d6"  # 後で _style_cmd_pane が上書きする
         self.cmd_pane = tk.Frame(self.pane_host, bg=CB)
         self.cmd_pane.place(relx=0, rely=0, relwidth=1, relheight=1)
+        # フォルダパスが深くなると長くなり、同じ行だと入力欄を圧迫して
+        # いたため、パス表示は独立した1行(上)にして、入力欄(下)は常に
+        # フル幅を使えるようにする。
         self.cmd_row = tk.Frame(self.cmd_pane, bg=CB)
         self.cmd_row.pack(side=tk.BOTTOM, fill=tk.X)
-        self.cmd_prompt = tk.Label(self.cmd_row, textvariable=self.cmd_prompt_var,
+        self.cmd_prompt = tk.Label(self.cmd_pane, textvariable=self.cmd_prompt_var,
                                    anchor=tk.W, bg=CB, fg=CIN)
-        self.cmd_prompt.pack(side=tk.LEFT, padx=(10, 2), pady=6)
-        self.cmd_stop_btn = tk.Button(self.cmd_row, text="中止", width=5,
+        self.cmd_prompt.pack(side=tk.BOTTOM, fill=tk.X, padx=(10, 8), pady=(0, 2))
+        self.cmd_stop_btn = tk.Button(self.cmd_row, text=L("stop_btn"), width=5,
                                       state=tk.DISABLED, command=self._cmd_stop)
         self.cmd_stop_btn.pack(side=tk.RIGHT, padx=(2, 8), pady=6)
-        self.cmd_entry = tk.Entry(self.cmd_row, relief=tk.FLAT, bg="#1a1d22",
-                                  fg=CF, insertbackground=CF)
-        self.cmd_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4), pady=6)
-        self.cmd_entry.bind("<Return>", lambda e: self._cmd_submit())
+        # パス込みの長いコマンドが窮屈で見づらいとの指摘で、2行→3行に
+        # (あくまで1コマンドの表示領域で、複数行のスクリプトを書く欄
+        # ではないため、Returnは改行ではなく送信、Up/Downはカーソル移動
+        # ではなく履歴呼び出しのまま)。
+        self.cmd_entry = tk.Text(self.cmd_row, height=3, wrap=tk.CHAR, relief=tk.FLAT,
+                                 bg="#1a1d22", fg=CF, insertbackground=CF,
+                                 highlightthickness=0, padx=4, pady=2)
+        self.cmd_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 4), pady=6)
+        self.cmd_entry.bind("<Return>", lambda e: (self._cmd_submit(), "break")[1])
         self.cmd_entry.bind("<Up>", self._cmd_hist_prev)
         self.cmd_entry.bind("<Down>", self._cmd_hist_next)
         self.cmd_entry.bind("<Control-c>", lambda e: (self._cmd_stop(), "break")[1])
         self.cmd_hist = []          # コマンド履歴(このセッション限り)
         self.cmd_hist_idx = None
-        cmid = tk.Frame(self.cmd_pane, bg=CB)
+        self.cmid = cmid = tk.Frame(self.cmd_pane, bg=CB)
         cmid.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self.cmd_out = tk.Text(cmid, wrap=tk.CHAR, state=tk.DISABLED, bg=CB, fg=CF,
                                padx=10, pady=8, relief=tk.FLAT, highlightthickness=0)
         self.cmd_out.tag_config("cin", foreground=CIN)
         self.cmd_out.tag_config("cerr", foreground=CERR)
         self.cmd_out.tag_config("cdim", foreground=CDIM)
+        self.cmd_out.tag_config("csuccess", foreground=CSUCCESS)
         csb = tk.Scrollbar(cmid, command=self.cmd_out.yview)
         self.cmd_out.config(yscrollcommand=csb.set)
         csb.pack(side=tk.RIGHT, fill=tk.Y)
@@ -328,35 +560,62 @@ class AdvisorGUI:
     def _style_tabs(self):
         """ヘッダーのボタン全部(会話/コマンド のタブ + 見た目/AI切替/
         続きから)を同じ調子にする。ノートモードは手書き風＋下線、
-        他モードは押しボタン風の枠。タブだけ選択中を太字にする。
+        コーディング/ハッカーは枠を使わず「[ 項目 ]」の無骨な見た目に
+        統一する(以前の押しボタン風の枠は、ノートだけ枠が無いのが
+        不揃いだと指摘された)。タブだけ選択中を太字にする。
         (全部 tk.Label なので activebackground 等 Button専用オプションは使えない)"""
         t = THEMES[self.theme_name]
+        paper = self.theme_name == "paper"
         active = getattr(self, "pane", "chat")
-        tabs = (("chat", self.tab_chat), ("cmd", self.tab_cmd))
-        utils = (self.theme_btn, self.switch_btn, self.hist_btn)
-        for name, btn in tabs:
+        tabs = (("chat", self.tab_chat, L("tab_chat")), ("cmd", self.tab_cmd, L("tab_cmd")))
+        utils = ((self.hist_btn, L("hist_btn")), (self.switch_btn, L("switch_btn")),
+                 (self.theme_btn, theme_label(t) + " ▾"))
+        # 左右端を赤線に揃えたのはノート(縦線・罫線がある)向けの調整。
+        # コーディング/ハッカーは全面黒で赤線が無く、[ ]で幅も食うため、
+        # 同じ余白だと「続きから」が完全に隠れるほど窮屈だった。
+        # ノートのレイアウトは変えず、それ以外だけ余白を詰める。
+        self.tab_chat.pack_configure(padx=(56 if paper else 4, 1))
+        self.theme_btn.pack_configure(padx=(6, 56 if paper else 4))
+        # ボタン間の隙間・ボタン自身の内側余白も、コーディング/ハッカーは
+        # 詰める(フォントも1段階小さくする)。ノートは変えない。
+        gap = 6 if paper else 2
+        self.model_lbl.pack_configure(padx=(10 if paper else 4))
+        self.tab_cmd.pack_configure(padx=(1 if paper else gap))
+        self.switch_btn.pack_configure(padx=gap)
+        self.hist_btn.pack_configure(padx=gap)
+        # 非選択タブの色。dimは背景とのコントラストが低すぎて
+        # (テーマにより約2.8〜4.2:1)背景に溶け込み、選択中と区別しづらい
+        # との指摘があった。aiは各テーマで元々コントラストが高く
+        # (7.7〜11.8:1)、選択中(fg)ともきちんと色が違うので、これに変える。
+        off_color = t["ai"]
+
+        def deco(label):
+            return label if paper else "[ %s ]" % label
+
+        for name, btn, label in tabs:
             on = (name == active) or (name == "chat" and active not in ("chat", "cmd"))
-            if self.theme_name == "paper":
+            if paper:
                 f = self.font
                 fs = max(9, f[1] - 1)   # 少し小さめにして幅を詰める
                 fnt = (f[0], fs, "bold", "underline") if on \
                     else (f[0], fs, "underline")
-                btn.config(relief=tk.FLAT, bd=0, highlightthickness=0, font=fnt,
-                           fg=(t["fg"] if on else t["dim"]), bg=t["bg"])
+                btn.config(text=deco(label), relief=tk.FLAT, bd=0, highlightthickness=0,
+                           font=fnt, fg=(t["fg"] if on else off_color), bg=t["bg"])
             else:
                 tf = t["font"]
-                btn.config(relief=(tk.SUNKEN if on else tk.RAISED), bd=2,
-                           highlightthickness=0, font=(tf[0], tf[1]),
-                           fg=t["dim"], bg=t["bg"])
-        for btn in utils:
-            if self.theme_name == "paper":
+                btn.config(text=deco(label), relief=tk.FLAT, bd=0, highlightthickness=0,
+                           font=(tf[0], tf[1] - 2), fg=(t["fg"] if on else off_color),
+                           bg=t["bg"], padx=1)
+        for btn, label in utils:
+            if paper:
                 f = self.font
                 fs = max(10, f[1])   # 手書き風は小さいと潰れるので本文サイズのまま
-                btn.config(relief=tk.FLAT, bd=0, highlightthickness=0,
+                btn.config(text=deco(label), relief=tk.FLAT, bd=0, highlightthickness=0,
                            font=(f[0], fs, "underline"), fg=t["dim"], bg=t["bg"])
             else:
-                btn.config(relief=tk.RAISED, bd=1, highlightthickness=0,
-                           font=("Hiragino Sans", 11), fg=t["dim"], bg=t["bg"])
+                # 常時使うボタンなのでdimではなくfgにする(理由は上のtabsと同じ)。
+                btn.config(text=deco(label), relief=tk.FLAT, bd=0, highlightthickness=0,
+                           font=("Hiragino Sans", 10), fg=t["fg"], bg=t["bg"], padx=2)
 
     # ---------- コマンドパネル ----------
     def _cmd_env(self):
@@ -392,12 +651,12 @@ class AdvisorGUI:
 
     def _cmd_submit(self):
         if self.cmd_proc is not None:
-            self._cmd_echo("(実行中です。中止 ボタンか Ctrl-C で止めてください)\n", "cdim")
+            self._cmd_echo(L("busy_running"), "cdim")
             return
-        cmd = self.cmd_entry.get().strip()
+        cmd = self.cmd_entry.get("1.0", "end-1c").strip()
         if not cmd:
             return
-        self.cmd_entry.delete(0, tk.END)
+        self.cmd_entry.delete("1.0", tk.END)
         if not self.cmd_hist or self.cmd_hist[-1] != cmd:
             self.cmd_hist.append(cmd)
         self.cmd_hist_idx = None
@@ -417,7 +676,7 @@ class AdvisorGUI:
                 self._cmd_refresh_prompt()
                 self._write({"t": "cwd", "path": self.cwd})   # AI のツールにも反映
             else:
-                self._cmd_echo("cd: そのフォルダはありません: %s\n" % target, "cerr")
+                self._cmd_echo(L("no_such_folder", path=target), "cerr")
             return
 
         self._cmd_set_running(True)
@@ -432,7 +691,7 @@ class AdvisorGUI:
                                  text=True, bufsize=1, encoding="utf-8",
                                  errors="replace", start_new_session=True)
         except Exception as e:
-            self.events.put({"t": "cmd_out", "text": "実行できません: %s\n" % e})
+            self.events.put({"t": "cmd_out", "text": L("cannot_run", err=e)})
             self.events.put({"t": "cmd_done", "code": -1})
             return
         self.cmd_proc = p
@@ -472,19 +731,19 @@ class AdvisorGUI:
             self.cmd_hist_idx = len(self.cmd_hist) - 1
         elif self.cmd_hist_idx > 0:
             self.cmd_hist_idx -= 1
-        self.cmd_entry.delete(0, tk.END)
-        self.cmd_entry.insert(0, self.cmd_hist[self.cmd_hist_idx])
+        self.cmd_entry.delete("1.0", tk.END)
+        self.cmd_entry.insert("1.0", self.cmd_hist[self.cmd_hist_idx])
         return "break"
 
     def _cmd_hist_next(self, _e=None):
         if self.cmd_hist_idx is None:
             return "break"
         self.cmd_hist_idx += 1
-        self.cmd_entry.delete(0, tk.END)
+        self.cmd_entry.delete("1.0", tk.END)
         if self.cmd_hist_idx >= len(self.cmd_hist):
             self.cmd_hist_idx = None            # 最新より下 = 空に
         else:
-            self.cmd_entry.insert(0, self.cmd_hist[self.cmd_hist_idx])
+            self.cmd_entry.insert("1.0", self.cmd_hist[self.cmd_hist_idx])
         return "break"
 
     def _request_draw_holes(self):
@@ -504,7 +763,7 @@ class AdvisorGUI:
         # ノート本文の左と、書き込み欄の左と、両方に同じ穴を敷く
         # (書き込み欄までルーズリーフの続きに見えるように)
         self._draw_holes_on(self.holes)
-        self._draw_holes_on(self.entry_holes)
+        self._draw_holes_on(self.write_holes)
 
     def _draw_holes_on(self, canvas):
         canvas.delete("all")
@@ -528,90 +787,55 @@ class AdvisorGUI:
         if vline:
             canvas.create_line(35, 0, 35, h, fill=vline, width=1)
 
-    def _request_draw_rules(self):
-        """_draw_rules を呼ぶ薄いラッパー。何度呼ばれても取りこぼさない
+    def _request_draw_grid(self, widget, pool_attr):
+        """_draw_grid を呼ぶ薄いラッパー。何度呼ばれても取りこぼさない
         よう after_idle 越しにまとめて1回呼ぶ。"""
-        if getattr(self, "_rules_pending", False):
+        pending_attr = pool_attr + "_pending"
+        if getattr(self, pending_attr, False):
             return
-        self._rules_pending = True
+        setattr(self, pending_attr, True)
 
         def go():
-            self._rules_pending = False
-            self._draw_rules()
+            setattr(self, pending_attr, False)
+            self._draw_grid(widget, pool_attr)
         self.root.after_idle(go)
 
-    def _draw_rules(self, _event=None):
-        """ノートモードだけ、本文の上に薄い横罫線を敷く(大学ノート風)。
-        「1行だけ実測してあとはピッチで延長」方式は、見出しや絵文字の
-        混じる行がたまたま基準になると全体が狂って線が二重になるなど
-        壊れる事故が起きた。今は今見えている行を全部1つずつ実測し、
-        隣り合う行どうしのすき間に個別に線を置く。行ごとに完結するので、
-        1行だけ高さが違っても他の行に影響しない。"""
-        if not hasattr(self, "_rule_lines"):
-            self._rule_lines = []
+    def _draw_grid(self, widget, pool_attr):
+        """横罫線を、文字の位置を一切見ずに上から下まで固定ピッチで敷く
+        (左の穴・縦の赤線と同じ考え方: 中身を一切見ないので中身とズレる
+        余地が無い)。
+
+        以前は見えている行を1つずつ実測して、その行の真下に線を置く
+        方式(_draw_rules)だった。見出し・絵文字・漢字の多い行などで
+        実際の文字の高さが微妙にばらつき、3日以上・何通りも式を変えて
+        調整しても、文字と線が重なる/足りない/ズレるを解消できなかった。
+        穴や縦の赤線が一度も壊れたことがないのは、そもそも中身を見て
+        いないからだと気づき、横罫線もそれに合わせた。ウィジェットの
+        高さだけを見て一定間隔(pitch、_apply_themeで計算)に線を置く。
+        スクロールや挿入のたびに測り直す必要も無くなったので、以前より
+        軽い(スクロールが鈍くなっていた原因もこれだったはず)。"""
+        if not hasattr(self, pool_attr):
+            setattr(self, pool_attr, [])
+        pool = getattr(self, pool_attr)
         color = THEMES[self.theme_name].get("hline")
-        if not color:
-            for ln in self._rule_lines:
+        pitch = getattr(self, "pitch", 24)
+        h = widget.winfo_height()
+        if not color or pitch <= 0 or h < pitch:
+            for ln in pool:
                 ln.place_forget()
             return
-        h = self.note.winfo_height()
-        if h < 20:
-            for ln in self._rule_lines:
-                ln.place_forget()
-            return
-
-        pitch = getattr(self, "pitch", self.font[1] + 14)
-        ascent = getattr(self, "_font_ascent", int(self.font[1] * 0.9))
-        descent = getattr(self, "_font_descent", int(self.font[1] * 0.25))
-        gap = max(1, pitch - ascent - descent)
-
-        # 今見えている行を上から順に1つずつ実測する。
-        rows = []
-        y = 0
-        guard = 0
-        try:
-            while y < h and guard < 200:
-                guard += 1
-                idx = self.note.index("@0,%d" % y)
-                info = self.note.dlineinfo(idx)
-                if not info:
-                    break
-                _x, ly, _w, lh, base = info
-                if lh <= 0 or base <= 0:
-                    break
-                rows.append((ly, lh, base))
-                ny = ly + lh + 1
-                if ny <= y:          # 念のため無限ループ防止
-                    break
-                y = ny
-        except tk.TclError:
-            rows = []
-
-        # 隣り合う行と行のすき間の、9割のところ(次の行のすぐ手前)に
-        # 線を置く。「下の罫線に文字を沿わせる」向き。1行ずつ実測した
-        # すき間を使うので、行の高さが多少バラついても線はその行なりの
-        # すき間に収まる。
-        ys = []
-        for i, (ly, lh, base) in enumerate(rows):
-            text_bottom = ly + base + descent
-            if i + 1 < len(rows):
-                next_top = rows[i + 1][0]
-                real_gap = next_top - text_bottom
-                if real_gap > 2:
-                    ys.append(text_bottom + int(round(real_gap * 0.9)))
-                else:
-                    ys.append(next_top - 2)
-            else:
-                # 画面のいちばん下の行は次が見えないので、想定ピッチで代用
-                ys.append(text_bottom + int(round(gap * 0.9)))
-
-        while len(self._rule_lines) < len(ys):
-            self._rule_lines.append(
-                tk.Frame(self.note, height=1, bd=0, highlightthickness=0))
-        for i, ln in enumerate(self._rule_lines):
-            if i < len(ys):
+        n = int(h // pitch)
+        # 行の切れ目ちょうど(pitch境界)ではなく、文字寄り(半分手前)に
+        # 線を詰める。ピッチ自体はここでは変えないので、揃っている状態は
+        # 崩れない。
+        offset = getattr(self, "_line_gap", 0) // 2
+        while len(pool) < n:
+            pool.append(tk.Frame(widget, height=1, bd=0, highlightthickness=0))
+        for i, ln in enumerate(pool):
+            if i < n:
                 ln.config(bg=color)
-                ln.place(in_=self.note, x=0, relwidth=1.0, y=ys[i], height=1)
+                ln.place(in_=widget, x=0, relwidth=1.0,
+                         y=(i + 1) * pitch - offset, height=1)
             else:
                 ln.place_forget()
 
@@ -623,41 +847,54 @@ class AdvisorGUI:
         code_f = ("Menlo", f[1] - 1)
 
         self.root.config(bg=t["bg"])
-        for w in (self.bar, self.inbar):
+        for w in (self.bar, self.write_row, self.status_frame):
             w.config(bg=t["bg"])                            # ヘッダーも本文と同色
-        self.model_lbl.config(bg=t["bg"], fg=t["dim"], font=(f[0], f[1] - 2))
+        # コーディング/ハッカーはdimの文字が背景に沈んで見づらい
+        # (コントラスト比 約3.9〜4.2:1、fgなら11〜15.6:1)ため、
+        # ノート以外ではヘッダーはfgを使う。
+        model_fg = t["dim"] if self.theme_name == "paper" else t["fg"]
+        self.model_lbl.config(bg=t["bg"], fg=model_fg, font=(f[0], f[1] - 2))
         self.status_lbl.config(bg=t["bg"], fg=t["dim"], font=(f[0], 10))
         self._style_tabs()  # 見た目/AI切替/続きから の3つもここでまとめて設定
         self.cmd_out.config(font=code_f)
         self.cmd_entry.config(font=code_f)
         self.cmd_prompt.config(font=code_f)
         line = t.get("line", t["dim"])
-        self.hdr_rule.config(bg=line)                       # ヘッダー下の罫線
-        self.in_rule.config(bg=line)                        # 入力欄の上の罫線
+        self.hdr_rule.config(bg=line)                       # ヘッダー下の罫線(赤)
+        self.in_rule.config(bg=line)                        # 書き込み欄の上の罫線(赤)
         self.note.config(bg=t["bg"], fg=t["fg"], font=f, insertbackground=t["fg"])
-        # 入力欄はモード間で高さを揃えるためフォントサイズを 13 で頭打ちに。
-        entry_fg = t["dim"] if getattr(self, "_entry_ph", False) else t["input_fg"]
-        self.entry.config(bg=t["bg"], fg=entry_fg, font=(f[0], min(f[1], 13)),
-                          insertbackground=t["input_fg"])
 
-        # 罫線の考え方を変えた: 今までは「今Tkが実際に描いた行はどこか」を
-        # 後から聞いて線を合わせようとしていたが、タイミングによってズレる
-        # ことがあった。今回は逆に「罫線の間隔(ピッチ)を先に決めて、本文の
-        # 行送りをそのピッチにぴったり合わせる」方式にする。行送りは
-        # spacing1=0 / spacing2=spacing3=S で自分で決めた値そのものなので、
-        # フォントの ascent+descent(実測)+ S が必ずピッチになる。
+        # 罫線を実測して合わせるのはもうやめる。逆に、罫線の間隔(pitch)を
+        # 先に固定で決め、本文の行送り(spacing)をそのpitchに"ぴったり
+        # 一致するよう計算で"合わせる。Tkのフォント指標(ascent/descent)
+        # は整数px、GAPも整数なので、pitch = ascent+descent+GAP は端数の
+        # 出ない厳密な整数になる。spacing2/spacing3にそのGAPをそのまま
+        # 渡せば、Tkが実際に描く行の高さは(見出し・絵文字を含め全行とも
+        # 同じ書体・同じサイズである限り)必ずascent+descent+GAPになり、
+        # pitchと理論上ズレようがない(測って追いかける要素が無い)。
         try:
             fm = tkfont.Font(font=f)
             ascent = fm.metrics("ascent")
             descent = fm.metrics("descent")
         except Exception:
             ascent, descent = int(f[1] * 0.9), int(f[1] * 0.25)
-        S = max(9, int(round(f[1] * 0.7)))    # 罫線ぶんのすき間。行数を増やす
-                                               # 要望で再び詰めた
-        self._font_ascent = ascent
-        self._font_descent = descent
+        S = max(6, int(round(f[1] * 0.5)))    # 行間(整数px)
         self.pitch = ascent + descent + S
+        self._line_gap = S   # _draw_grid が罫線を文字寄りに詰めるのに使う
+        self.status_frame.config(height=self.pitch * 2)   # ステータスバーは常に2行ぶん
         self.note.config(spacing1=0, spacing2=S, spacing3=S)
+
+        # 書き込み欄。ノート本文と地続きに見えるよう、同じ背景・書体・
+        # 行間にする。点滅カーソルは止め(insertofftime=0)、代わりに
+        # 空のときは矢印(WRITE_MARK)を書き始めの目印として出す。
+        write_fg = t["dim"] if getattr(self, "_write_ph", False) else t["input_fg"]
+        write_font_size = min(f[1], 13)
+        self.write_zone.config(bg=t["bg"], fg=write_fg, font=(f[0], write_font_size),
+                               insertbackground=t["input_fg"], insertofftime=0,
+                               spacing1=0, spacing2=S, spacing3=S)
+        # 右端の手前4文字ぶんで折り返すための余白(全角文字幅≒フォント
+        # サイズとして概算)。
+        self.write_pad_right.config(bg=t["bg"], width=write_font_size * 4)
         self._draw_holes()
 
         # 色・書体・寄せだけ。左右の余白(1/3)は _relayout が幅から計算する。
@@ -670,17 +907,46 @@ class AdvisorGUI:
                                  font=f)
         self.note.tag_config("prompt", foreground=t.get("prompt", t["fg"]),
                              justify=tk.LEFT, font=(f[0], f[1], "bold"))
-        self.note.tag_config("rule", foreground=t.get("rule", t["dim"]),
-                             justify=tk.CENTER, lmargin1=0, lmargin2=0, rmargin=0,
-                             font=f, spacing1=0, spacing2=S, spacing3=S)
+        self.note.tag_config("rule", lmargin1=0, lmargin2=0, rmargin=0,
+                             spacing1=0, spacing2=S, spacing3=S)
         self.note.tag_config("code", font=code_f, background=t.get("code_bg", t["bg"]),
                              lmargin1=f[1] * 3, lmargin2=f[1] * 3)
         hl = t.get("hl", {})
         for key, tag in HL_TAG.items():
             self.note.tag_config(tag, foreground=hl.get(key, t["ai"]), font=code_f,
                                  background=t.get("code_bg", t["bg"]))
-        self.theme_btn.config(text=t["label"] + " ▾")  # 「見た目: 」は省いて幅を詰める
         self._relayout()
+        # テーマ切替は <Configure> を発生させない(ウィンドウサイズは
+        # 変わらない)ので、色やpitchが変わる罫線はここで明示的に引き直す。
+        self._request_draw_grid(self.note, "_grid_note")
+        self._request_draw_grid(self.write_zone, "_grid_write")
+        self._style_cmd_pane()
+
+    def _style_cmd_pane(self):
+        """コマンドパネルの配色。ハッカーの時は緑系(エラー/終了コードは
+        赤のまま)、ノートの時は本文と同じ薄いベージュ地に濃紺の文字、
+        それ以外(コーディング)は従来通りの端末風(黒地)のまま。"""
+        if self.theme_name == "hacker":
+            bg, cf, cin, cdim, csuccess, cerr, entry_bg = (
+                "#000000", "#39ff5a", "#00ff66", "#2e7d4f", "#39ff5a",
+                "#ff5555", "#0a0f0a")
+        elif self.theme_name == "paper":
+            bg, cf, cin, cdim, csuccess, cerr, entry_bg = (
+                "#f6efdc", "#243b6b", "#5a4636", "#9a8f78", "#2e7d32",
+                "#a5341f", "#f6efdc")
+        else:
+            bg, cf, cin, cdim, csuccess, cerr, entry_bg = (
+                "#0f1115", "#d6d6d6", "#4d9fff", "#7a8088", "#4caf50",
+                "#ff6b6b", "#1a1d22")
+        for w in (self.cmd_pane, self.cmd_row, self.cmid, self.cmd_prompt):
+            w.config(bg=bg)
+        self.cmd_out.config(bg=bg, fg=cf)
+        self.cmd_out.tag_config("cin", foreground=cin)
+        self.cmd_out.tag_config("cerr", foreground=cerr)
+        self.cmd_out.tag_config("cdim", foreground=cdim)
+        self.cmd_out.tag_config("csuccess", foreground=csuccess)
+        self.cmd_entry.config(bg=entry_bg, fg=cf, insertbackground=cf)
+        self.cmd_prompt.config(fg=cin)
 
     def _relayout(self, event=None):
         """幅の 1/3 を左右の余白に。自分=左1/3空け右寄せ / 相手=右1/3空け左寄せ。"""
@@ -697,7 +963,6 @@ class AdvisorGUI:
         self.note.tag_config("you", lmargin1=you_left, lmargin2=you_left, rmargin=near)
         for tag in ("ai", "dim", "err"):
             self.note.tag_config(tag, lmargin1=near, lmargin2=near, rmargin=ai_right)
-        self._request_draw_rules()
 
     def _popup_menu(self, menu, widget):
         """見た目/AI切替ボタン用。普通のButtonの真下にメニューを出す
@@ -717,8 +982,10 @@ class AdvisorGUI:
         save_cfg({"theme": key})
 
     def _block_sep(self):
-        """発言の切れ目に空の1行(罫線1本ぶん)。先頭では入れない。
-        大学ノートの「1行あけて書く」感じ。行の縦リズムも崩さない。"""
+        """発言の切れ目に空の1行。先頭では入れない。
+        大学ノートの「1行あけて書く」感じ。行の縦リズムも崩さない。
+        横罫線は全行に敷く方式(_draw_rules)に一本化したので、ここでは
+        個別には挿入しない。"""
         if self.note.index("end-1c") != "1.0":
             self.note.insert(tk.END, "\n", "gap")
 
@@ -752,13 +1019,20 @@ class AdvisorGUI:
             self.note.config(state=tk.NORMAL)
             self.note.insert(tk.END, "\n", tag)
             self.note.config(state=tk.DISABLED)
+            self.note.see(tk.END)
             return
         chunk = "".join(chars[:24])
         del chars[:24]
         self.note.config(state=tk.NORMAL)
         self.note.insert(tk.END, chunk, tag)
         self.note.config(state=tk.DISABLED)
-        self.root.after(18, lambda: self._stream_step(chars, tag))
+        # 返答が書き込み欄の下に隠れて続きに気づけない問題への対応。
+        # 質問直後はq_anchorで質問が見える位置から始まるが、返答が伸びて
+        # 画面の下端に達したら、書いている文字を追いかけて自然に下へ
+        # 流す(短い返答ならここは実質何もしない=見える範囲のままで済む)。
+        self.note.see(tk.END)
+        # 40msでもまだ速いとの指摘でさらに遅く。
+        self.root.after(70, lambda: self._stream_step(chars, tag))
 
     def note_has_anchor(self):
         try:
@@ -766,6 +1040,23 @@ class AdvisorGUI:
             return True
         except tk.TclError:
             return False
+
+    def _on_note_wheel(self, event):
+        """1行(表示上の1単位 = _apply_themeでpitchぴったりに揃えている)
+        単位でしか止まらないようにする。event.deltaを貯めて、1行分
+        たまるたびに yview_scroll(±1, "units") を1回だけ呼ぶ(標準の
+        px単位スクロールは自前で止めるので、既定の処理はさせない
+        = return "break")。THRESHはトラックパッドの感触を見ながらの
+        調整値。"""
+        self._wheel_accum = getattr(self, "_wheel_accum", 0) + event.delta
+        THRESH = 3
+        while self._wheel_accum >= THRESH:
+            self.note.yview_scroll(-1, "units")
+            self._wheel_accum -= THRESH
+        while self._wheel_accum <= -THRESH:
+            self.note.yview_scroll(1, "units")
+            self._wheel_accum += THRESH
+        return "break"
 
     def _render_reply(self, txt):
         """```コードブロック``` を含む返答を、地の文とコードに分けて描画する。
@@ -787,8 +1078,9 @@ class AdvisorGUI:
         if tail:
             self.note.insert(tk.END, tail + "\n", "ai")
         self.note.config(state=tk.DISABLED)
-        if self.note_has_anchor():
-            self.note.yview("q_anchor")
+        # ストリーム表示(_stream_step)と同じく、末尾が見える位置まで
+        # 下げる。q_anchorだけだと返答が長い時に続きが隠れて見えなかった。
+        self.note.see(tk.END)
 
     def _highlight(self, a, b):
         try:
@@ -811,7 +1103,7 @@ class AdvisorGUI:
                 universal_newlines=True, encoding="utf-8",
             )
         except OSError as e:
-            messagebox.showerror("起動できません", f"advisor を起動できませんでした:\n{e}")
+            messagebox.showerror(L("cannot_start_title"), L("cannot_start_body", err=e))
             self.root.destroy()
             return
         threading.Thread(target=self._reader, daemon=True).start()
@@ -845,7 +1137,7 @@ class AdvisorGUI:
                 try:
                     self._handle(obj)
                 except Exception as e:
-                    self._append(f"(内部エラー: {e})", "err")
+                    self._append(L("internal_error", err=e), "err")
         except queue.Empty:
             pass
         self.root.after(80, self._pump)
@@ -853,10 +1145,12 @@ class AdvisorGUI:
     def _handle(self, obj):
         t = obj.get("t")
         if t == "ready":
-            self._set_model(obj.get("provider", ""), obj.get("model", ""))
+            # _set_model がモデル名の短縮表示に models リストのラベルを
+            # 使うため、先に _fill_menu でキャッシュしておく。
             self._fill_menu(obj.get("models", []))
-            hist = "暗号化保存" if obj.get("history") else "保存しない"
-            self.status_var.set(f"準備完了（履歴: {hist}）")
+            self._set_model(obj.get("provider", ""), obj.get("model", ""))
+            hist = L("history_encrypted") if obj.get("history") else L("history_off")
+            self.status_var.set(L("ready_status", hist=hist))
             self._set_busy(False)
         elif t == "text":
             txt = str(obj.get("text", ""))
@@ -869,18 +1163,21 @@ class AdvisorGUI:
         elif t == "error":
             self._append(str(obj.get("text", "")), "err")
         elif t == "tool":
-            self._append(f"— {obj.get('name', '')} を使います —", "dim")
+            self._append(L("using_tool", name=obj.get("name", "")), "dim")
         elif t == "status":
             self.status_var.set(obj.get("text", "") or "")
         elif t == "model":
             self._set_model(obj.get("provider", ""), obj.get("model", ""))
+            # 切替後の「← 使用中」を反映するため、メニュー項目を作り直す。
+            self._fill_menu([{"id": k, "label": v} for k, v in
+                             getattr(self, "_model_labels", {}).items()])
         elif t == "confirm":
             ok = messagebox.askyesno(
-                "確認",
-                f"AIが次のことをしようとしています:\n\n{obj.get('prompt', '')}\n\n許可しますか？")
+                L("confirm_title"),
+                L("confirm_body", prompt=obj.get("prompt", "")))
             self._write({"t": "reply", "value": "y" if ok else "n"})
         elif t == "need_passphrase":
-            self._ask_passphrase(obj.get("prompt", "パスフレーズ"),
+            self._ask_passphrase(obj.get("prompt", L("passphrase_default")),
                                  recover=bool(obj.get("recover")))
         elif t == "need_recovery":
             self._ask_recovery(obj.get("mode", "new"), obj.get("question", ""))
@@ -895,30 +1192,44 @@ class AdvisorGUI:
             self._cmd_echo(str(obj.get("text", "")))
         elif t == "cmd_done":
             rc = obj.get("code", 0)
-            self._cmd_echo("[終了 %s]\n" % rc, "cerr" if rc else "cdim")
+            self._cmd_echo(L("turn_end", code=rc), "cerr" if rc else "csuccess")
             self.cmd_proc = None
             self._cmd_set_running(False)
         elif t == "bye":
-            self.status_var.set("advisor を終了しました")
+            self.status_var.set(L("bye_status"))
             self._set_busy(True)
 
     # ---------- 小物 ----------
     def _set_model(self, provider, model):
-        # 「provider / model」は長すぎてヘッダーを圧迫するので、モデル名だけ表示。
-        self.model_label_var.set(model or provider)
+        # 生のモデルID(例: gemini-3.5-flash-lite)は長すぎてヘッダーを
+        # 圧迫し、「AIを切替」ボタンの文字が切れる原因になっていた。
+        # models.txtの説明(_fill_menuでキャッシュ済み)の em-dash 前の
+        # 短い人間向け名前(例: "Gemini Flash-Lite")があればそちらを使う。
+        self._current_model_id = model
+        label = getattr(self, "_model_labels", {}).get(model)
+        if label:
+            short = re.split(r"\s*[—-]\s", label, maxsplit=1)[0].strip()
+        else:
+            short = model or provider
+        self.model_label_var.set(short)
 
     def _fill_menu(self, models):
         self.switch_menu.delete(0, tk.END)
+        self._model_labels = {m.get("id"): m.get("label", "") for m in models}
+        current = getattr(self, "_current_model_id", None)
         for i, m in enumerate(models, start=1):
+            label = f"{i}. {m.get('label', m.get('id', '?'))}"
+            if m.get("id") == current:
+                label += L("currently_using")
             self.switch_menu.add_command(
-                label=f"{i}. {m.get('label', m.get('id', '?'))}",
+                label=label,
                 command=lambda n=i: self._write({"t": "user", "text": str(n)}),
             )
 
     def _ask_passphrase(self, prompt, recover=False):
         # 確認欄はなし(1回だけ)。打ち間違い対策は「合言葉」で担保する。
         dlg = tk.Toplevel(self.root)
-        dlg.title("パスフレーズ")
+        dlg.title(L("passphrase_title"))
         dlg.transient(self.root)
         dlg.grab_set()
         tk.Label(dlg, text=prompt).pack(padx=16, pady=(14, 4))
@@ -934,12 +1245,12 @@ class AdvisorGUI:
         ent.bind("<Return>", done)
         btns = tk.Frame(dlg)
         btns.pack(pady=(4, 14))
-        tk.Button(btns, text="OK", command=done).pack(side=tk.LEFT, padx=4)
+        tk.Button(btns, text=L("ok"), command=done).pack(side=tk.LEFT, padx=4)
         if recover:
             def use_recovery():
                 self._write({"t": "passphrase", "recover": 1})
                 dlg.destroy()
-            tk.Button(btns, text="合言葉で復旧", command=use_recovery).pack(side=tk.LEFT, padx=4)
+            tk.Button(btns, text=L("recover_with_answer"), command=use_recovery).pack(side=tk.LEFT, padx=4)
         dlg.protocol("WM_DELETE_WINDOW",
                      lambda: (self._write({"t": "passphrase", "value": ""}), dlg.destroy()))
 
@@ -947,26 +1258,25 @@ class AdvisorGUI:
         # 合言葉(秘密の質問)。mode="new"=初回設定(質問+答え)、
         # mode="unlock"=復旧(答えだけ)。答えは大文字小文字・前後空白を区別しない。
         dlg = tk.Toplevel(self.root)
-        dlg.title("合言葉")
+        dlg.title(L("secret_title"))
         dlg.transient(self.root)
         dlg.grab_set()
         q_var = tk.StringVar(value=question)
         a_var = tk.StringVar()
 
         if mode == "new":
-            tk.Label(dlg, justify=tk.LEFT, text=(
-                "パスフレーズを忘れたときの復旧用です(必須)。\n"
-                "あなたにしか答えられない質問にしてください。\n"
-                "例: 初めて買った車の名前は？").rstrip()).pack(padx=16, pady=(14, 6))
-            tk.Label(dlg, text="質問").pack(anchor="w", padx=16)
+            tk.Label(dlg, justify=tk.LEFT,
+                     text=L("secret_new_body")).pack(padx=16, pady=(14, 6))
+            tk.Label(dlg, text=L("question_label")).pack(anchor="w", padx=16)
             q_ent = tk.Entry(dlg, textvariable=q_var, width=36)
             q_ent.pack(padx=16, pady=(0, 6))
             q_ent.focus_set()
         else:
-            tk.Label(dlg, text="合言葉で履歴を復旧します。").pack(padx=16, pady=(14, 6))
-            tk.Label(dlg, text=("質問: " + (question or "?"))).pack(anchor="w", padx=16)
+            tk.Label(dlg, text=L("secret_unlock_body")).pack(padx=16, pady=(14, 6))
+            tk.Label(dlg, text=L("question_prefix", q=(question or "?"))).pack(
+                anchor="w", padx=16)
 
-        tk.Label(dlg, text="答え").pack(anchor="w", padx=16)
+        tk.Label(dlg, text=L("answer_label")).pack(anchor="w", padx=16)
         a_ent = tk.Entry(dlg, textvariable=a_var, width=36)
         a_ent.pack(padx=16, pady=(0, 6))
         if mode != "new":
@@ -978,7 +1288,7 @@ class AdvisorGUI:
             dlg.destroy()
 
         a_ent.bind("<Return>", done)
-        tk.Button(dlg, text="OK", command=done).pack(pady=(4, 14))
+        tk.Button(dlg, text=L("ok"), command=done).pack(pady=(4, 14))
         dlg.protocol("WM_DELETE_WINDOW",
                      lambda: (self._write({"t": "recovery", "question": "", "answer": ""}),
                               dlg.destroy()))
@@ -986,13 +1296,13 @@ class AdvisorGUI:
     # ---------- 続きから(過去の会話) ----------
     def _show_history_dialog(self, items):
         if not items:
-            messagebox.showinfo("続きから", "保存された会話がありません。")
+            messagebox.showinfo(L("resume_title"), L("no_saved_history"))
             return
         dlg = tk.Toplevel(self.root)
-        dlg.title("続きから")
+        dlg.title(L("resume_title"))
         dlg.transient(self.root)
         dlg.geometry("560x360")
-        tk.Label(dlg, text="続きから始める会話を選んでください").pack(padx=10, pady=(10, 2))
+        tk.Label(dlg, text=L("resume_pick")).pack(padx=10, pady=(10, 2))
         lb = tk.Listbox(dlg, font=("", 12), activestyle="dotbox")
         lb.pack(fill=tk.BOTH, expand=True, padx=10, pady=4)
         for it in items:
@@ -1013,8 +1323,8 @@ class AdvisorGUI:
         lb.bind("<Return>", choose)
         btnf = tk.Frame(dlg)
         btnf.pack(fill=tk.X, padx=10, pady=(0, 10))
-        tk.Button(btnf, text="開く", command=choose).pack(side=tk.RIGHT)
-        tk.Button(btnf, text="やめる", command=dlg.destroy).pack(side=tk.RIGHT, padx=(0, 6))
+        tk.Button(btnf, text=L("open"), command=choose).pack(side=tk.RIGHT)
+        tk.Button(btnf, text=L("cancel"), command=dlg.destroy).pack(side=tk.RIGHT, padx=(0, 6))
 
     def _render_history(self, entries):
         self.note.config(state=tk.NORMAL)
@@ -1027,7 +1337,7 @@ class AdvisorGUI:
         page = getattr(self, "_resume_page", None)
         self._resume_page = None
         if page:
-            self._append(f"（{page[0]}ページ目 / 全{page[1]}ページ）", "dim")
+            self._append(L("resume_page", page=page[0], total=page[1]), "dim")
         for e in entries:
             role = e.get("role")
             txt = str(e.get("text", ""))
@@ -1043,62 +1353,59 @@ class AdvisorGUI:
             elif role == "tool":
                 self._append("— " + txt + " —", "dim")
             # toolresult はうるさいので再表示しない
-        self._append("（ここまで読み込みました。続きをどうぞ）", "dim")
+        self._append(L("resume_loaded"), "dim")
         self._show_pane("chat")
         self.note.see(tk.END)
 
     def _set_busy(self, busy):
         self.busy = busy
-        self.send_btn.config(state=tk.DISABLED if busy else tk.NORMAL)
+        self.write_zone.config(state=tk.DISABLED if busy else tk.NORMAL)
 
-    def _entry_show_placeholder(self):
-        self.entry.delete("1.0", tk.END)
-        self.entry.insert("1.0", ENTRY_PLACEHOLDER)
-        self._entry_ph = True
-        self._entry_apply_ph_color()
+    def _write_show_marker(self):
+        self.write_zone.delete("1.0", tk.END)
+        self.write_zone.insert("1.0", WRITE_MARK)
+        self._write_ph = True
+        self._write_apply_ph_color()
 
-    def _entry_apply_ph_color(self):
+    def _write_apply_ph_color(self):
         t = THEMES[self.theme_name]
-        self.entry.config(fg=(t["dim"] if self._entry_ph else t["input_fg"]))
+        self.write_zone.config(fg=(t["dim"] if self._write_ph else t["input_fg"]))
 
-    def _entry_click_clear(self, _event=None):
+    def _write_click_clear(self, _event=None):
         # クリックはIMEの変換に関係しないので、ここで消してしまって
         # 問題ない(<Key> で消すとIMEの変換を邪魔するので使わない)。
-        if self._entry_ph:
-            self.entry.delete("1.0", tk.END)
-            self._entry_ph = False
-            self._entry_apply_ph_color()
+        if self._write_ph:
+            self.write_zone.delete("1.0", tk.END)
+            self._write_ph = False
+            self._write_apply_ph_color()
 
-    def _entry_on_modified(self, _event=None):
-        # <<Modified>> は自分の delete/insert(プレースホルダーの表示自体)
-        # でも飛んでくるので、毎回まずフラグを下ろす(でないと二度と
-        # 発火しなくなる)。
-        self.entry.edit_modified(False)
-        if not self._entry_ph:
+    def _write_on_modified(self, _event=None):
+        # <<Modified>> は自分の delete/insert(矢印の表示自体)でも飛んで
+        # くるので、毎回まずフラグを下ろす(でないと二度と発火しなくなる)。
+        self.write_zone.edit_modified(False)
+        if not self._write_ph:
             return
-        cur = self.entry.get("1.0", "end-1c")
-        if cur == ENTRY_PLACEHOLDER:
-            return   # プレースホルダーを表示しただけ(自分の変更)
-        # 実際に何か入力された。カーソルが末尾にあれば「プレースホルダー
-        # +打った文字」のはずなのでそれを取り除く。プレースホルダーの
-        # 途中をクリックしてから打った場合(_entry_click_clear が効いて
-        # いれば起きないはずだが念のため)も、含まれていれば取り除く。
-        if cur.startswith(ENTRY_PLACEHOLDER):
-            typed = cur[len(ENTRY_PLACEHOLDER):]
-        elif ENTRY_PLACEHOLDER in cur:
-            typed = cur.replace(ENTRY_PLACEHOLDER, "")
+        cur = self.write_zone.get("1.0", "end-1c")
+        if cur == WRITE_MARK:
+            return   # 矢印を表示しただけ(自分の変更)
+        # 実際に何か入力された。「矢印+打った文字」のはずなのでそれを
+        # 取り除く。
+        if cur.startswith(WRITE_MARK):
+            typed = cur[len(WRITE_MARK):]
+        elif WRITE_MARK in cur:
+            typed = cur.replace(WRITE_MARK, "")
         else:
             typed = cur
         if typed != cur:
-            self.entry.delete("1.0", tk.END)
+            self.write_zone.delete("1.0", tk.END)
             if typed:
-                self.entry.insert("1.0", typed)
-        self._entry_ph = False
-        self._entry_apply_ph_color()
+                self.write_zone.insert("1.0", typed)
+        self._write_ph = False
+        self._write_apply_ph_color()
 
-    def _entry_focus_out(self, _event=None):
-        if not self.entry.get("1.0", "end-1c").strip():
-            self._entry_show_placeholder()
+    def _write_focus_out(self, _event=None):
+        if not self.write_zone.get("1.0", "end-1c").strip():
+            self._write_show_marker()
 
     def _on_return(self, event):
         if event.state & 0x0001:  # Shift+Enter は改行
@@ -1107,16 +1414,23 @@ class AdvisorGUI:
         return "break"
 
     def _send_current(self):
-        if self.busy or self._entry_ph:
+        if self.busy:
             return
-        text = self.entry.get("1.0", tk.END).strip()
+        text = self.write_zone.get("1.0", tk.END).strip()
+        # 矢印(WRITE_MARK)が本文の先頭に残ったまま送信されてしまう
+        # 不具合があった(IMEの変換タイミングによっては_write_on_modified
+        # の除去処理が効かないことがある)。_write_phの状態に関わらず、
+        # 送信直前にここでも必ず取り除く(最後の砦)。
+        mark = WRITE_MARK.strip()
+        if text.startswith(mark):
+            text = text[len(mark):].strip()
         if not text:
             return
-        self.entry.delete("1.0", tk.END)
+        self._write_show_marker()            # 書き込み欄を矢印に戻す
         self._append(text, "you", anchor=True)
         self.note.yview("q_anchor")          # 送った自分の発言を画面の一番上へ
         self._set_busy(True)
-        self.status_var.set("問い合わせ中…")
+        self.status_var.set(L("querying_status"))
         self._write({"t": "user", "text": text})
 
     def _on_close(self):

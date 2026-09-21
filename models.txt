@@ -1,5 +1,5 @@
-claude-opus-5|Claude Opus 5 — 最高性能・有料
-claude-sonnet-5|Claude Sonnet 5 — バランス型・有料
-claude-haiku-4-5-20251001|Claude Haiku 4.5 — 高速・有料
-gemini-3.5-flash-lite|Gemini Flash-Lite — 速い・無料
-gemini-3.6-flash|Gemini Flash — 高性能・無料
+claude-opus-5|Claude Opus 5 — 最高性能・有料|Claude Opus 5 — top performance, paid
+claude-sonnet-5|Claude Sonnet 5 — バランス型・有料|Claude Sonnet 5 — balanced, paid
+claude-haiku-4-5-20251001|Claude Haiku 4.5 — 高速・有料|Claude Haiku 4.5 — fast, paid
+gemini-3.5-flash-lite|Gemini Flash-Lite — 速い・無料|Gemini Flash-Lite — fast, free
+gemini-3.6-flash|Gemini Flash — 高性能・無料|Gemini Flash — high performance, free

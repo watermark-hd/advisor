@@ -15,8 +15,162 @@
 #   5. bash補完の設置 (~/.bash_profile から source)
 #   6. ダブルクリック用 Advisor.app (GUI) の生成 (~/Applications)
 #   7. 実際にAPIを叩いて疎通確認
+#
+# 日英対応: ダウンロードの7割が海外ユーザーとのことで必須になった。
+# GUI(advisor_gui.py)・エージェント(claude-agent.pl)と同じく、macOSの
+# システム言語設定を直接見て判定する(LANG環境変数はSSH/GUI起動時に
+# あてにならないことがあるため)。bash 3.2(旧Macの標準)には連想配列が
+# 無いので、msg()内のcase文で日英を切り替える方式にしている。
 
 set -e
+
+# --- 言語判定 ---
+# CLAUDE_LANG=en/ja があれば最優先(システム言語を変えずに英語表示を
+# 確認したいとき用)。例: CLAUDE_LANG=en bash setup.sh
+IS_EN=0
+case "${CLAUDE_LANG:-}" in
+  en) IS_EN=1 ;;
+  ja) IS_EN=0 ;;
+  *)
+    if command -v defaults >/dev/null 2>&1; then
+      LOCALE_DETECTED="$(defaults read -g AppleLocale 2>/dev/null || true)"
+      case "$LOCALE_DETECTED" in
+        ja*|"") IS_EN=0 ;;
+        *) IS_EN=1 ;;
+      esac
+    fi
+    ;;
+esac
+
+# msg <key> [printf-args...]: キーに対応する文言を表示する。
+# IS_EN=1のとき英語のcaseにヒットすればそれを、無ければ日本語(既定)に
+# フォールバックする(訳し漏れがあっても壊れず日本語表示になるだけ)。
+msg() {
+  local key="$1"; shift
+  local fmt=""
+  if [ "$IS_EN" = "1" ]; then
+    case "$key" in
+      tier_a) fmt="Found the Tier A toolchain (~/claude-toolchain). Using it." ;;
+      stock_curl) fmt="Using the system curl (Mavericks and later already support TLS 1.2, no extra build needed)." ;;
+      title) fmt="=== high_sierra_claude (advisor) setup ===" ;;
+      ask_provider) fmt="Which AI do you want to use?" ;;
+      opt_gemini) fmt="  1) Gemini (Google)    — free tier available, no credit card needed   [default]" ;;
+      opt_anthropic) fmt="  2) Anthropic (Claude) — high performance, pay-as-you-go (needs a credit charge)" ;;
+      enter_number) fmt="Enter a number [1]: " ;;
+      using_provider) fmt="→ Using %s." ;;
+      reuse_key) fmt="Using the already-saved %s." ;;
+      reuse_key_hint) fmt="To use a different key, run 'rm %s' and start over." ;;
+      gemini_key_intro) fmt="A Gemini API key is required. If you don't have one yet:" ;;
+      gemini_key_1) fmt="  1. Open https://aistudio.google.com/apikey" ;;
+      gemini_key_2) fmt="  2. Sign in with your Google account" ;;
+      gemini_key_3) fmt="  3. Click 'Create API key' (no card needed for the free tier)" ;;
+      gemini_key_hint) fmt="The API key is the string starting with 'AIza'." ;;
+      anthropic_key_intro) fmt="An Anthropic API key is required. If you don't have one yet:" ;;
+      anthropic_key_1) fmt="  1. Open https://console.anthropic.com/ (a different site from claude.ai)" ;;
+      anthropic_key_2) fmt="  2. Create an account / sign in" ;;
+      anthropic_key_3) fmt="  3. Create a new key from 'API Keys' in the left menu" ;;
+      anthropic_key_4) fmt="  4. Add a small credit charge under 'Billing' (pay-as-you-go)" ;;
+      anthropic_key_note) fmt="Note: this is not the password you use to sign in to claude.ai." ;;
+      anthropic_key_hint) fmt="The API key is the long string starting with 'sk-ant-api03-'." ;;
+      paste_key) fmt="Paste your API key and press Enter (it won't be shown on screen): " ;;
+      err_empty_key) fmt="Error: nothing was entered. Please run this again." ;;
+      err_placeholder) fmt="Error: found '<' or '>' in the key." ;;
+      err_placeholder2) fmt="Did you accidentally paste the placeholder brackets from the instructions too?" ;;
+      err_placeholder3) fmt="Please paste just the key value, without those brackets." ;;
+      warn_gemini_prefix) fmt="Warning: it doesn't start with 'AIza'. Please check you copied it correctly (continuing anyway)." ;;
+      warn_anthropic_prefix) fmt="Warning: it doesn't start with 'sk-ant-api'. Did you paste your claude.ai password by mistake? (continuing anyway)" ;;
+      warn_short_key) fmt="Warning: the key is only %s characters. Did the copy get cut off?" ;;
+      saved_key) fmt="Saved to %s (readable only by your account)" ;;
+      placed_files) fmt="Placed claude-agent.pl / models.txt / advisor_gui.py in %s." ;;
+      created_wrapper) fmt="Created %s." ;;
+      removed_old_wrapper) fmt="Removed the old %s." ;;
+      added_path) fmt="Added %s to PATH." ;;
+      installed_completion) fmt="Installed bash completion (%s)." ;;
+      path_effective) fmt="(Takes effect next login. To use it now, run 'source ~/.bash_profile' or open a new Terminal window.)" ;;
+      no_python3) fmt="python3 was not found, so skipping the Advisor.app build." ;;
+      created_app) fmt="Created %s (double-click to launch the GUI; no Terminal window opens)." ;;
+      created_app_hint) fmt="  Drag it into the Dock or onto your Desktop for one-click access next time." ;;
+      building_app) fmt="Building Advisor.app (first time may take a minute)..." ;;
+      building_app_clt) fmt="Installing Xcode Command Line Tools (one-time, ~190MB, needed to sign the app)..." ;;
+      app_build_fallback) fmt="Couldn't build the proper app bundle, so using the simple version instead (menu bar will show \"Python\" as the app name)." ;;
+      checking_api) fmt="Checking the connection to the API..." ;;
+      api_ok) fmt="Connection OK. You're all set." ;;
+      usage_intro) fmt="Usage: just type 'advisor' in Terminal." ;;
+      usage_help) fmt="  advisor --help            show all options" ;;
+      usage_select) fmt="  advisor --select-model    choose which AI to use" ;;
+      usage_model) fmt="  advisor -m <ID>           use a different AI for this session only" ;;
+      usage_switch) fmt="  (during a conversation, switch AI with /claude or /gemini)" ;;
+      api_error) fmt="API error (HTTP %s). Please check that the key is correct, and" ;;
+      api_error_gemini) fmt="check in AI Studio that the key is active." ;;
+      api_error_anthropic) fmt="check in the Console that credit has been charged." ;;
+      api_error_body) fmt="--- Response from the server ---" ;;
+    esac
+  fi
+  if [ -z "$fmt" ]; then
+    case "$key" in
+      tier_a) fmt="Tier A toolchain (~/claude-toolchain) が見つかりました。こちらを使います。" ;;
+      stock_curl) fmt="標準のcurlを使います(Mavericks以降はTLS1.2対応済みのため追加ビルド不要)。" ;;
+      title) fmt="=== high_sierra_claude (advisor) セットアップ ===" ;;
+      ask_provider) fmt="どちらのAIを使いますか?" ;;
+      opt_gemini) fmt="  1) Gemini (Google)   — 無料枠あり・クレジットカード不要        [既定]" ;;
+      opt_anthropic) fmt="  2) Anthropic (Claude) — 高性能・従量課金(要クレジットチャージ)" ;;
+      enter_number) fmt="番号を入力 [1]: " ;;
+      using_provider) fmt="→ %s を使います。" ;;
+      reuse_key) fmt="保存済みの %s をそのまま使います。" ;;
+      reuse_key_hint) fmt="別のキーに変えたい場合は 'rm %s' してから再実行してください。" ;;
+      gemini_key_intro) fmt="Gemini APIキーが必要です。まだお持ちでない場合:" ;;
+      gemini_key_1) fmt="  1. https://aistudio.google.com/apikey を開く" ;;
+      gemini_key_2) fmt="  2. Googleアカウントでログイン" ;;
+      gemini_key_3) fmt="  3. 'Create API key' でキーを発行(無料枠を使う分にはカード登録不要)" ;;
+      gemini_key_hint) fmt="'AIza' で始まる文字列がAPIキーです。" ;;
+      anthropic_key_intro) fmt="Anthropic APIキーが必要です。まだお持ちでない場合:" ;;
+      anthropic_key_1) fmt="  1. https://console.anthropic.com/ を開く (claude.aiとは別サイトです)" ;;
+      anthropic_key_2) fmt="  2. アカウントを作成 / ログイン" ;;
+      anthropic_key_3) fmt="  3. 左メニューの 'API Keys' から新しいキーを発行" ;;
+      anthropic_key_4) fmt="  4. 'Billing' で少額のクレジットをチャージ(従量課金)" ;;
+      anthropic_key_note) fmt="注意: claude.aiにログインする時のパスワードとは別物です。" ;;
+      anthropic_key_hint) fmt="'sk-ant-api03-' で始まる長い文字列がAPIキーです。" ;;
+      paste_key) fmt="APIキーを貼り付けてEnter(画面には表示されません): " ;;
+      err_empty_key) fmt="エラー: 何も入力されませんでした。もう一度実行してください。" ;;
+      err_placeholder) fmt="エラー: '<' か '>' が含まれています。" ;;
+      err_placeholder2) fmt="説明文のプレースホルダー記号を誤って一緒に貼り付けていませんか?" ;;
+      err_placeholder3) fmt="記号を含めず、キーの値だけを貼り付けてください。" ;;
+      warn_gemini_prefix) fmt="警告: 'AIza' で始まっていません。貼り付けミスがないか確認してください(このまま続けます)。" ;;
+      warn_anthropic_prefix) fmt="警告: 'sk-ant-api' で始まっていません。claude.aiのパスワードなどを貼り付けていませんか?(このまま続けます)" ;;
+      warn_short_key) fmt="警告: キーが %s 文字しかありません。コピーが途中で切れていませんか?" ;;
+      saved_key) fmt="%s に保存しました(あなたのアカウントだけが読めるファイルです)" ;;
+      placed_files) fmt="%s に claude-agent.pl / models.txt / advisor_gui.py を配置しました。" ;;
+      created_wrapper) fmt="%s を作成しました。" ;;
+      removed_old_wrapper) fmt="旧 %s を削除しました。" ;;
+      added_path) fmt="PATHに %s を追加しました。" ;;
+      installed_completion) fmt="bash補完を設置しました(%s)。" ;;
+      path_effective) fmt="(次回ログインから有効。今すぐ使うには 'source ~/.bash_profile' を実行するか、新しいターミナルを開いてください)" ;;
+      no_python3) fmt="python3 が見つからないため Advisor.app の生成はスキップします。" ;;
+      created_app) fmt="%s を作成しました（ダブルクリックで GUI が起動。ターミナルは開きません）。" ;;
+      created_app_hint) fmt="  Dock やデスクトップにドラッグしておくと次回から一発です。" ;;
+      building_app) fmt="Advisor.app をビルドしています(初回は少し時間がかかります)..." ;;
+      building_app_clt) fmt="Xcode Command Line Tools を導入しています(初回のみ・約190MB、アプリの署名に必要です)..." ;;
+      app_build_fallback) fmt="正式なアプリとしてビルドできなかったため、簡易版で作成します(メニューバーのアプリ名は「Python」のままになります)。" ;;
+      checking_api) fmt="APIへの疎通を確認しています..." ;;
+      api_ok) fmt="疎通確認OK。準備完了です。" ;;
+      usage_intro) fmt="使い方: ターミナルで 'advisor' と打つだけです。" ;;
+      usage_help) fmt="  advisor --help            オプション一覧" ;;
+      usage_select) fmt="  advisor --select-model    使うモデルを選ぶ" ;;
+      usage_model) fmt="  advisor -m <ID>           このセッションだけモデルを指定" ;;
+      usage_switch) fmt="  (会話中に /claude・/gemini でAIを切り替え)" ;;
+      api_error) fmt="APIエラー(HTTP %s)。キーが正しいか、" ;;
+      api_error_gemini) fmt="AI Studio でキーが有効か確認してください。" ;;
+      api_error_anthropic) fmt="Console でクレジットがチャージされているか確認してください。" ;;
+      api_error_body) fmt="--- サーバーからの応答 ---" ;;
+      *) fmt="$key" ;;
+    esac
+  fi
+  if [ $# -gt 0 ]; then
+    printf -- "$fmt\n" "$@"
+  else
+    printf '%s\n' "$fmt"
+  fi
+}
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ENV_FILE="$HOME/.claude-agent-env"
@@ -40,25 +194,25 @@ upsert_env() {
 if [ -x "$HOME/claude-toolchain/bin/curl" ]; then
   CURL_BIN="$HOME/claude-toolchain/bin/curl"
   CACERT="$HOME/claude-toolchain/cacert.pem"
-  echo "Tier A toolchain (~/claude-toolchain) が見つかりました。こちらを使います。"
+  msg tier_a
 else
   CURL_BIN="curl"
   CACERT=""
-  echo "標準のcurlを使います(Mavericks以降はTLS1.2対応済みのため追加ビルド不要)。"
+  msg stock_curl
 fi
 echo ""
 
-echo "=== high_sierra_claude (advisor) セットアップ ==="
+msg title
 echo ""
 
 # 既存の設定を読み込んでおく(キーの使い回し判定に使う)
 [ -f "$ENV_FILE" ] && . "$ENV_FILE" 2>/dev/null || true
 
 # --- 1. 使うAIを選ぶ ---
-echo "どちらのAIを使いますか?"
-echo "  1) Gemini (Google)   — 無料枠あり・クレジットカード不要        [既定]"
-echo "  2) Anthropic (Claude) — 高性能・従量課金(要クレジットチャージ)"
-printf "番号を入力 [1]: "
+msg ask_provider
+msg opt_gemini
+msg opt_anthropic
+printf "$(msg enter_number)"
 read -r PROVIDER_CHOICE
 PROVIDER_CHOICE="${PROVIDER_CHOICE:-1}"
 
@@ -69,38 +223,38 @@ else
   PROVIDER="gemini"
   KEY_VAR="GEMINI_API_KEY"
 fi
-echo "→ $PROVIDER を使います。"
+msg using_provider "$PROVIDER"
 echo ""
 
 # --- 2. APIキー ---
 # 既にそのプロバイダのキーが保存済みなら、それを使う
 EXISTING_KEY="$(eval "printf '%s' \"\${$KEY_VAR}\"")"
 if [ -n "$EXISTING_KEY" ]; then
-  echo "保存済みの $KEY_VAR をそのまま使います。"
-  echo "別のキーに変えたい場合は 'rm $ENV_FILE' してから再実行してください。"
+  msg reuse_key "$KEY_VAR"
+  msg reuse_key_hint "$ENV_FILE"
   API_KEY="$EXISTING_KEY"
   echo ""
 else
   if [ "$PROVIDER" = "gemini" ]; then
-    echo "Gemini APIキーが必要です。まだお持ちでない場合:"
-    echo "  1. https://aistudio.google.com/apikey を開く"
-    echo "  2. Googleアカウントでログイン"
-    echo "  3. 'Create API key' でキーを発行(無料枠を使う分にはカード登録不要)"
+    msg gemini_key_intro
+    msg gemini_key_1
+    msg gemini_key_2
+    msg gemini_key_3
     echo ""
-    echo "'AIza' で始まる文字列がAPIキーです。"
+    msg gemini_key_hint
   else
-    echo "Anthropic APIキーが必要です。まだお持ちでない場合:"
-    echo "  1. https://console.anthropic.com/ を開く (claude.aiとは別サイトです)"
-    echo "  2. アカウントを作成 / ログイン"
-    echo "  3. 左メニューの 'API Keys' から新しいキーを発行"
-    echo "  4. 'Billing' で少額のクレジットをチャージ(従量課金)"
+    msg anthropic_key_intro
+    msg anthropic_key_1
+    msg anthropic_key_2
+    msg anthropic_key_3
+    msg anthropic_key_4
     echo ""
-    echo "注意: claude.aiにログインする時のパスワードとは別物です。"
-    echo "'sk-ant-api03-' で始まる長い文字列がAPIキーです。"
+    msg anthropic_key_note
+    msg anthropic_key_hint
   fi
   echo ""
 
-  printf "APIキーを貼り付けてEnter(画面には表示されません): "
+  printf "$(msg paste_key)"
   stty -echo 2>/dev/null || true
   read -r API_KEY
   stty echo 2>/dev/null || true
@@ -109,15 +263,15 @@ else
   API_KEY=$(echo "$API_KEY" | sed 's/^[ \t]*//;s/[ \t]*$//')
 
   if [ -z "$API_KEY" ]; then
-    echo "エラー: 何も入力されませんでした。もう一度実行してください。"
+    msg err_empty_key
     exit 1
   fi
 
   case "$API_KEY" in
     \<*|*\>)
-      echo "エラー: '<' か '>' が含まれています。"
-      echo "説明文のプレースホルダー記号を誤って一緒に貼り付けていませんか?"
-      echo "記号を含めず、キーの値だけを貼り付けてください。"
+      msg err_placeholder
+      msg err_placeholder2
+      msg err_placeholder3
       exit 1
       ;;
   esac
@@ -125,22 +279,22 @@ else
   if [ "$PROVIDER" = "gemini" ]; then
     case "$API_KEY" in
       AIza*) ;;
-      *) echo "警告: 'AIza' で始まっていません。貼り付けミスがないか確認してください(このまま続けます)。" ;;
+      *) msg warn_gemini_prefix ;;
     esac
   else
     case "$API_KEY" in
       sk-ant-api*) ;;
-      *) echo "警告: 'sk-ant-api' で始まっていません。claude.aiのパスワードなどを貼り付けていませんか?(このまま続けます)" ;;
+      *) msg warn_anthropic_prefix ;;
     esac
   fi
 
   key_len=$(echo -n "$API_KEY" | wc -c | tr -d ' ')
   if [ "$key_len" -lt 30 ]; then
-    echo "警告: キーが ${key_len} 文字しかありません。コピーが途中で切れていませんか?"
+    msg warn_short_key "$key_len"
   fi
 
   upsert_env "$KEY_VAR" "$API_KEY"
-  echo "$ENV_FILE に保存しました(あなたのアカウントだけが読めるファイルです)"
+  msg saved_key "$ENV_FILE"
   echo ""
 fi
 
@@ -152,10 +306,11 @@ cp "$SCRIPT_DIR/agent/claude-agent.pl" "$BUILD_DIR/claude-agent.pl"
 cp "$SCRIPT_DIR/models.txt" "$BUILD_DIR/models.txt"
 [ -f "$SCRIPT_DIR/gui/advisor_gui.py" ] && cp "$SCRIPT_DIR/gui/advisor_gui.py" "$BUILD_DIR/advisor_gui.py"
 [ -f "$SCRIPT_DIR/launcher/advisor.png" ] && cp "$SCRIPT_DIR/launcher/advisor.png" "$BUILD_DIR/advisor.png"
-echo "$BUILD_DIR に claude-agent.pl / models.txt / advisor_gui.py を配置しました。"
+msg placed_files "$BUILD_DIR"
 
 # --- 4. advisor コマンド(ラッパー)の設置 ---
 mkdir -p "$BIN_DIR"
+WRAP_IS_EN="$IS_EN"
 cat > "$BIN_DIR/advisor" << WRAPEOF
 #!/bin/bash
 # advisor — high_sierra_claude ラッパーコマンド (setup.sh が自動生成)
@@ -166,6 +321,13 @@ MODELS_FILE="$BUILD_DIR/models.txt"
 AGENT_SCRIPT="$BUILD_DIR/claude-agent.pl"
 CURL_BIN="$CURL_BIN"
 CACERT="$CACERT"
+# CLAUDE_LANG=en/ja がその場で指定されていればそちらを優先し、
+# 無ければセットアップ時に判定した言語を使う。
+case "\${CLAUDE_LANG:-}" in
+  en) IS_EN=1 ;;
+  ja) IS_EN=0 ;;
+  *) IS_EN="$WRAP_IS_EN" ;;
+esac
 
 # 端末の文字コードを UTF-8 に固定する。これが C ロケール等になっていると、
 # 素の行入力(canonical mode)で日本語1文字(3バイト)をtty側が1バイト単位で
@@ -179,7 +341,29 @@ export LC_CTYPE="\${LC_CTYPE:-\$LANG}"
 source "\$ENV_FILE"
 
 show_help() {
-  cat <<EOF
+  if [ "\$IS_EN" = "1" ]; then
+    cat <<EOF
+Usage: advisor [option]
+
+  -h, --help              show this help
+      --version           show the version
+      --select-model [N]  choose which AI to use; add a number to decide right away (e.g. advisor --select-model 3)
+      --list-models       list the available AIs
+  -m, --model <ID>        use a different AI for this session only
+      --list-history      list saved conversations (needs your passphrase)
+      --resume            pick a saved conversation and continue it
+      --no-history        don't save this conversation (and don't ask for a passphrase)
+      --change-passphrase change the history passphrase
+      --set-recovery      set a recovery question (used if you forget your passphrase)
+
+Run with no arguments to start with your saved settings.
+Switch AI anytime by typing its number at the prompt (type /model to see the list again).
+To pick one from the shell instead, use --select-model [N].
+Conversations are encrypted and saved to ~/.claude-agent/history by default
+(you set a passphrase on first run; a recovery question is optional).
+EOF
+  else
+    cat <<EOF
 使い方: advisor [オプション]
 
   -h, --help              このヘルプを表示
@@ -199,10 +383,16 @@ show_help() {
 会話は既定で ~/.claude-agent/history に暗号化保存されます
 (初回起動時にパスフレーズを設定。合言葉も任意で設定できます)。
 EOF
+  fi
 }
 
 list_models() {
-  awk -F'|' '{printf "  %-32s %s\n", \$1, \$2}' "\$MODELS_FILE"
+  # models.txt は id|日本語説明|English description。IS_ENに応じて列を選ぶ。
+  if [ "\$IS_EN" = "1" ]; then
+    awk -F'|' '{printf "  %-32s %s\n", \$1, (\$3 != "" ? \$3 : \$2)}' "\$MODELS_FILE"
+  else
+    awk -F'|' '{printf "  %-32s %s\n", \$1, \$2}' "\$MODELS_FILE"
+  fi
 }
 
 # id が gemini... なら gemini、それ以外は anthropic
@@ -216,21 +406,23 @@ select_model() {
   local want="\$1"
   local i=1
   local ids=()
-  echo "使うAIを選んでください:"
-  while IFS='|' read -r id desc; do
+  if [ "\$IS_EN" = "1" ]; then echo "Choose which AI to use:"; else echo "使うAIを選んでください:"; fi
+  while IFS='|' read -r id desc_ja desc_en; do
+    local desc="\$desc_ja"
+    if [ "\$IS_EN" = "1" ] && [ -n "\$desc_en" ]; then desc="\$desc_en"; fi
     printf "  %d) %s\n" "\$i" "\$desc"
     ids[\$i]="\$id"
     i=\$((i+1))
   done < "\$MODELS_FILE"
   local choice="\$want"
   if [ -z "\$choice" ]; then
-    printf "番号を入力 [1]: "
+    if [ "\$IS_EN" = "1" ]; then printf "Enter a number [1]: "; else printf "番号を入力 [1]: "; fi
     read -r choice
   fi
   choice=\${choice:-1}
   local chosen="\${ids[\$choice]}"
   if [ -z "\$chosen" ]; then
-    echo "無効な選択です。"
+    if [ "\$IS_EN" = "1" ]; then echo "Invalid choice."; else echo "無効な選択です。"; fi
     exit 1
   fi
   local prov
@@ -240,13 +432,17 @@ select_model() {
   echo "export CLAUDE_MODEL=\$chosen" >> "\$ENV_FILE"
   echo "export CLAUDE_PROVIDER=\$prov" >> "\$ENV_FILE"
   chmod 600 "\$ENV_FILE"
-  echo "→ \$chosen を使います。"
+  if [ "\$IS_EN" = "1" ]; then echo "→ Using \$chosen."; else echo "→ \$chosen を使います。"; fi
   local keyvar=ANTHROPIC_API_KEY
   [ "\$prov" = gemini ] && keyvar=GEMINI_API_KEY
   if ! grep -q "^export \$keyvar=" "\$ENV_FILE"; then
     local slash=claude
     [ "\$prov" = gemini ] && slash=gemini
-    echo "※ このAIのキーがまだありません。'advisor' を起動して /\$slash と打つと登録できます。"
+    if [ "\$IS_EN" = "1" ]; then
+      echo "※ You don't have a key for this AI yet. Run 'advisor' and type /\$slash to register one."
+    else
+      echo "※ このAIのキーがまだありません。'advisor' を起動して /\$slash と打つと登録できます。"
+    fi
   fi
 }
 
@@ -295,11 +491,19 @@ while [ \$# -gt 0 ]; do
       shift 2
       ;;
     *)
-      echo "そのオプションは分かりませんでした。ふつうは何も付けずに:" >&2
-      echo "  advisor            起動する(たいていこれだけでOK)" >&2
-      echo "  advisor version    バージョンを表示" >&2
-      echo "  advisor help       詳しい使い方" >&2
-      echo "(ダッシュ - は付けても付けなくてもかまいません)" >&2
+      if [ "\$IS_EN" = "1" ]; then
+        echo "That option wasn't recognized. Usually you can just run:" >&2
+        echo "  advisor            start (this is usually all you need)" >&2
+        echo "  advisor version    show the version" >&2
+        echo "  advisor help       detailed usage" >&2
+        echo "(the leading - is optional either way)" >&2
+      else
+        echo "そのオプションは分かりませんでした。ふつうは何も付けずに:" >&2
+        echo "  advisor            起動する(たいていこれだけでOK)" >&2
+        echo "  advisor version    バージョンを表示" >&2
+        echo "  advisor help       詳しい使い方" >&2
+        echo "(ダッシュ - は付けても付けなくてもかまいません)" >&2
+      fi
       exit 1
       ;;
   esac
@@ -315,49 +519,50 @@ else
 fi
 WRAPEOF
 chmod +x "$BIN_DIR/advisor"
-echo "$BIN_DIR/advisor を作成しました。"
+msg created_wrapper "$BIN_DIR/advisor"
 # 旧名(claude)が残っていれば片付ける
-[ -e "$BIN_DIR/claude" ] && rm -f "$BIN_DIR/claude" && echo "旧 $BIN_DIR/claude を削除しました。"
+[ -e "$BIN_DIR/claude" ] && rm -f "$BIN_DIR/claude" && msg removed_old_wrapper "$BIN_DIR/claude"
 
 if ! grep -qF 'export PATH=$HOME/bin:$PATH' "$HOME/.bash_profile" 2>/dev/null; then
   echo "export PATH=\$HOME/bin:\$PATH" >> "$HOME/.bash_profile"
-  echo "PATHに $BIN_DIR を追加しました。"
+  msg added_path "$BIN_DIR"
 fi
 
 # --- 5. bash補完の設置 ---
 cp "$SCRIPT_DIR/completion/advisor-completion.bash" "$COMPLETION_FILE"
 if ! grep -qF "source $COMPLETION_FILE" "$HOME/.bash_profile" 2>/dev/null; then
   echo "source $COMPLETION_FILE" >> "$HOME/.bash_profile"
-  echo "bash補完を設置しました($COMPLETION_FILE)。"
+  msg installed_completion "$COMPLETION_FILE"
 fi
 # 旧補完(claude)の後始末
 if [ -f "$HOME/.claude-completion.bash" ]; then
   grep -v "source $HOME/.claude-completion.bash" "$HOME/.bash_profile" > "$HOME/.bash_profile.tmp" 2>/dev/null && mv "$HOME/.bash_profile.tmp" "$HOME/.bash_profile" || true
   rm -f "$HOME/.claude-completion.bash"
 fi
-echo "(次回ログインから有効。今すぐ使うには 'source ~/.bash_profile' を実行するか、新しいターミナルを開いてください)"
+msg path_effective
 echo ""
 
 # --- 6. ダブルクリック用 Advisor.app (GUI) の生成 ---
-# 追加ツール不要の最小アプリバンドル。中の実行ファイルはシェルスクリプトで、
-# python3 で GUI (advisor_gui.py) を起動するだけ。ターミナルは開かない。
+# py2appで単体アプリとしてビルドする。python3を直接execするだけの簡易版だと
+# メニューバー/DockにOS標準の「Python」という表示が出てしまう(python.org
+# 配布のpython3実行ファイル自体にその名前が埋め込まれており、シェルスクリプト
+# 経由のexecでは上書きできないため)。py2appでビルドすると実行ファイル自体が
+# バンドル内に生成され、正しく「Advisor」と表示される。
+# ビルドに失敗した場合(ネットワーク不通など)は簡易版にフォールバックする
+# (動作は変わらず、メニューバー表示だけ「Python」のままになる)。
 PY3="$(command -v python3 || true)"
 [ -z "$PY3" ] && [ -x /Library/Frameworks/Python.framework/Versions/3.10/bin/python3 ] \
   && PY3=/Library/Frameworks/Python.framework/Versions/3.10/bin/python3
 [ -z "$PY3" ] && PY3=/usr/bin/python3
 
-if [ -n "$PY3" ]; then
-  mkdir -p "$HOME/Applications"
-  rm -rf "$APP_PATH" "$HOME/Applications/Claude.app"
+build_advisor_app_simple() {
   mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources"
-
   cat > "$APP_PATH/Contents/MacOS/Advisor" << APPEOF
 #!/bin/bash
 export PATH="\$HOME/bin:/usr/local/bin:/usr/bin:/bin"
 exec "$PY3" "\$HOME/claude-build/advisor_gui.py"
 APPEOF
   chmod +x "$APP_PATH/Contents/MacOS/Advisor"
-
   cat > "$APP_PATH/Contents/Info.plist" << 'PLISTEOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -375,17 +580,77 @@ APPEOF
 PLISTEOF
   printf 'APPL????' > "$APP_PATH/Contents/PkgInfo"
   [ -f "$ICON_SRC" ] && cp "$ICON_SRC" "$APP_PATH/Contents/Resources/advisor.icns"
+}
+
+build_advisor_app_py2app() {
+  # コード署名にXcode Command Line Toolsが要る。無ければその場で導入する
+  # (softwareupdateはこの用途では管理者権限が無くても実行できる)。
+  if ! xcode-select -p >/dev/null 2>&1; then
+    msg building_app_clt
+    touch /tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress
+    local clt_label
+    clt_label="$(softwareupdate -l 2>/dev/null | grep -o 'Command Line Tools[^,]*for Xcode-[0-9.]*' | tail -1)"
+    [ -n "$clt_label" ] && softwareupdate -i "$clt_label" >/dev/null 2>&1
+    rm -f /tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress
+    xcode-select -p >/dev/null 2>&1 || return 1
+  fi
+
+  # pyobjc-framework-Cocoa はメニューバーのAbout/隠す/サービス/終了といった
+  # Tk自身が固定の英語文字列で自動生成する項目を、OSのネイティブメニューへ
+  # 直接アクセスして日本語化するために使う(advisor_gui.py側で使用)。
+  "$PY3" -m pip install --user --quiet py2app pyobjc-framework-Cocoa \
+    >/tmp/advisor-py2app-install.log 2>&1 || return 1
+
+  local build_dir="$HOME/.advisor-app-build"
+  mkdir -p "$build_dir"
+  local iconfile_opt=""
+  [ -f "$ICON_SRC" ] && iconfile_opt="\"iconfile\": \"$ICON_SRC\","
+  cat > "$build_dir/setup.py" << PYEOF
+from setuptools import setup
+APP = ["$HOME/claude-build/advisor_gui.py"]
+OPTIONS = {
+    "argv_emulation": False,
+    $iconfile_opt
+    "plist": {
+        "CFBundleName": "Advisor",
+        "CFBundleDisplayName": "Advisor",
+        "CFBundleIdentifier": "com.high-sierra-claude.advisor",
+        "CFBundleVersion": "0.1",
+        "CFBundleShortVersionString": "0.1",
+        "NSHighResolutionCapable": True,
+    },
+}
+setup(app=APP, options={"py2app": OPTIONS}, setup_requires=["py2app"])
+PYEOF
+  ( cd "$build_dir" && rm -rf build dist && "$PY3" setup.py py2app -A ) \
+    >/tmp/advisor-py2app-build.log 2>&1 || return 1
+  [ -d "$build_dir/dist/Advisor.app" ] || return 1
+
+  rm -rf "$APP_PATH"
+  mkdir -p "$HOME/Applications"
+  cp -R "$build_dir/dist/Advisor.app" "$APP_PATH"
+}
+
+if [ -n "$PY3" ]; then
+  mkdir -p "$HOME/Applications"
+  rm -rf "$HOME/Applications/Claude.app"
+  msg building_app
+  if ! build_advisor_app_py2app; then
+    msg app_build_fallback
+    rm -rf "$APP_PATH"
+    build_advisor_app_simple
+  fi
   touch "$APP_PATH"
 
-  echo "$APP_PATH を作成しました（ダブルクリックで GUI が起動。ターミナルは開きません）。"
-  echo "  Dock やデスクトップにドラッグしておくと次回から一発です。"
+  msg created_app "$APP_PATH"
+  msg created_app_hint
 else
-  echo "python3 が見つからないため Advisor.app の生成はスキップします。"
+  msg no_python3
 fi
 echo ""
 
 # --- 7. 疎通確認 ---
-echo "APIへの疎通を確認しています..."
+msg checking_api
 RESPONSE_FILE="/tmp/advisor-setup-check-$$.json"
 if [ -n "$CACERT" ]; then
   CACERT_OPT=(--cacert "$CACERT")
@@ -416,21 +681,21 @@ fi
 
 echo ""
 if [ "$HTTP_CODE" = "200" ]; then
-  echo "疎通確認OK。準備完了です。"
+  msg api_ok
   echo ""
-  echo "使い方: ターミナルで 'advisor' と打つだけです。"
-  echo "  advisor --help            オプション一覧"
-  echo "  advisor --select-model    使うモデルを選ぶ"
-  echo "  advisor -m <ID>           このセッションだけモデルを指定"
-  echo "  (会話中に /claude・/gemini でAIを切り替え)"
+  msg usage_intro
+  msg usage_help
+  msg usage_select
+  msg usage_model
+  msg usage_switch
 else
-  echo "APIエラー(HTTP $HTTP_CODE)。キーが正しいか、"
+  msg api_error "$HTTP_CODE"
   if [ "$PROVIDER" = "gemini" ]; then
-    echo "AI Studio でキーが有効か確認してください。"
+    msg api_error_gemini
   else
-    echo "Console でクレジットがチャージされているか確認してください。"
+    msg api_error_anthropic
   fi
-  echo "--- サーバーからの応答 ---"
+  msg api_error_body
   cat "$RESPONSE_FILE"
   echo ""
 fi

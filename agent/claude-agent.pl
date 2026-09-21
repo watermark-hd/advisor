@@ -65,6 +65,173 @@ sub dbg  {
     _logline($ENV{CLAUDE_DEBUG_LOG}, $line) if $ENV{CLAUDE_DEBUG_LOG};
 }
 
+# ------------------------------------------------------------------
+# 言語(日英)。ダウンロードの7割が海外ユーザーとのことで必須になった。
+# GUI側(advisor_gui.py)と同じくmacOSのシステム言語設定を直接見る
+# (LANG環境変数はGUIアプリ起動時に空なことがあり、あてにできない)。
+# 判定できなければ、この項目の既存ユーザーに合わせて日本語を既定にする。
+# ------------------------------------------------------------------
+my $LANGCODE = 'ja';
+if (defined $ENV{CLAUDE_LANG} && $ENV{CLAUDE_LANG} =~ /^(en|ja)$/i) {
+    # CLAUDE_LANG=en/ja があれば最優先(システム言語を変えずに英語表示を
+    # 確認したいとき用)。
+    $LANGCODE = lc($1);
+}
+else {
+    my $out = `defaults read -g AppleLocale 2>/dev/null`;
+    if (defined $out && $out ne '' && $out !~ /^ja/i) {
+        $LANGCODE = 'en';
+    }
+}
+# key => [ja, en]。%sプレースホルダはsprintfで埋める(L(key, arg1, arg2...))。
+my %S = (
+    need_key            => ["%s を設定してください\n", "Please set %s\n"],
+    unknown_provider    => ["不明なプロバイダ: '%s' (anthropic か gemini)\n",
+                             "Unknown provider: '%s' (anthropic or gemini)\n"],
+    key_not_registered  => ["%s が未登録です。setup.sh でそのAIのキーを登録してください。",
+                             "%s is not set yet. Run setup.sh to register that AI's key."],
+    cannot_connect      => ["サーバーに接続できませんでした。通信環境を確認して、もう一度どうぞ。\n",
+                             "Could not reach the server. Please check your connection and try again.\n"],
+    api_error           => ["APIエラー (HTTP %s): %s\n", "API error (HTTP %s): %s\n"],
+    api_error_short     => ["APIエラー: %s", "API error: %s"],
+    bad_response        => ["応答をうまく解釈できませんでした。もう一度どうぞ。\n",
+                             "Could not parse the response. Please try again.\n"],
+    cannot_make_tmp     => ["一時ファイルを作成できません: %s\n", "Could not create temp file: %s\n"],
+    history_prompt      => ["履歴パスフレーズ", "History passphrase"],
+    new_history_prompt  => ["新しい履歴パスフレーズを決めてください", "Choose a new history passphrase"],
+    wrong_answer        => ["合言葉の答えが違います。", "That answer doesn't match."],
+    recovered           => ["復旧しました。", "Recovered."],
+    wrong_passphrase    => ["パスフレーズが違います。もう一度どうぞ。", "Wrong passphrase. Please try again."],
+    no_recovery_set     => ["合言葉が設定されなかったので、今回は履歴を保存しません。",
+                             "No recovery answer was set, so history won't be saved this time."],
+    could_not_load_conv => ["その会話を読み込めませんでした。", "Could not load that conversation."],
+    turn_failed         => ["うまく処理できませんでした(続けられます)。",
+                             "Something went wrong (you can keep going)."],
+    empty_response      => ["(AIからの応答が空でした。言い方を変えてもう一度どうぞ)",
+                             "(The AI's response was empty. Try rephrasing.)"],
+    tool_error          => ["ツール実行でエラーが出ました: %s", "The tool raised an error: %s"],
+    already_on          => ["すでに [%s / %s] です。", "Already using [%s / %s]."],
+    switched_to         => ["→ [%s / %s] にしました。", "→ switched to [%s / %s]."],
+    switched_to_kept    => ["→ [%s / %s] にしました。会話はそのまま引き継がれます。",
+                             "→ switched to [%s / %s]. Conversation continues as-is."],
+    cannot_open_read    => ["エラー: %s を開けません: %s", "Error: could not open %s: %s"],
+    cannot_open_write   => ["エラー: %s に書き込めません: %s", "Error: could not write %s: %s"],
+    confirm_write_file  => ["ファイル '%s' に書き込みます", "Write to file '%s'"],
+    write_cancelled     => ["ユーザーが書き込みをキャンセルしました", "The user cancelled the write"],
+    write_done          => ["書き込み完了: %s", "Wrote: %s"],
+    confirm_run_shell   => ["コマンドを実行します: %s", "Run this command: %s"],
+    run_cancelled       => ["ユーザーが実行をキャンセルしました", "The user cancelled the run"],
+    no_output           => ["(出力なし)", "(no output)"],
+    unknown_tool        => ["不明なツール: %s", "Unknown tool: %s"],
+    # ---- 端末(CLIのみ、--gui無し)向け ----
+    interrupted         => ["\n中断しました。\n", "\nInterrupted.\n"],
+    key_missing_prompt  => ["\n%s が未設定です。貼り付けてEnter(空Enterでキャンセル): ",
+                             "\n%s is not set. Paste it and press Enter (empty to cancel): "],
+    switch_cancelled    => ["キャンセルしました。[%s / %s] のままです。\n",
+                             "Cancelled. Still using [%s / %s].\n"],
+    switch_failed       => ["それでも切り替えられませんでした: %s",
+                             "Still couldn't switch: %s"],
+    save_key_prompt     => ["このキーを %s に保存しますか? [y/N] ",
+                             "Save this key to %s? [y/N] "],
+    saved_plain         => ["保存しました。\n", "Saved.\n"],
+    model_list_unavail  => ["\n(モデル一覧が読み込めません)\n", "\n(Could not load the model list)\n"],
+    currently_using_cli => [" ← 使用中", " ← current"],
+    model_menu_hint     => ["番号を入力すると切り替わります。そのまま質問してもOK。\n",
+                             "Type a number to switch. Or just type your question as usual.\n"],
+    thinking_status     => ["問い合わせ中", "thinking"],
+    hidden_input_hint   => ["（入力中の文字は画面に表示されません。そのまま打って Enter）\n",
+                             "(What you type won't be shown on screen. Just type it and press Enter.)\n"],
+    ask_secret_question => ["質問を入力してください (例: 初めて買った車の名前は?): ",
+                             "Enter your recovery question (example: What was your first car?): "],
+    secret_q_empty      => ["質問が空です。合言葉は設定しませんでした。\n",
+                             "The question was empty. No recovery answer was set.\n"],
+    secret_answer_1     => ["答え: ", "Answer: "],
+    secret_answer_again => ["もう一度入力: ", "Enter it again: "],
+    secret_mismatch     => ["一致しませんでした。合言葉は設定しませんでした。\n",
+                             "They didn't match. No recovery answer was set.\n"],
+    secret_save_failed  => ["合言葉の保存に失敗しました。\n", "Could not save the recovery answer.\n"],
+    secret_set_done     => ["合言葉を設定しました(答えは大文字小文字と前後の空白を区別しません)。\n",
+                             "Recovery answer set (it's not case-sensitive and ignores leading/trailing spaces).\n"],
+    new_passphrase_1    => ["新しいパスフレーズ: ", "New passphrase: "],
+    passphrase_mismatch => ["一致しませんでした。パスフレーズは変更しません。\n",
+                             "They didn't match. The passphrase was not changed.\n"],
+    changed_done        => ["変更しました。\n", "Changed.\n"],
+    change_failed       => ["変更に失敗しました。\n", "Could not change it.\n"],
+    secret_question_is  => ["合言葉の質問: %s\n", "Recovery question: %s\n"],
+    secret_answer_try   => ["答え (空Enterで中止): ", "Answer (empty to cancel): "],
+    set_new_passphrase_q => ["新しいパスフレーズを設定しますか? [y/N] ",
+                              "Set a new passphrase now? [y/N] "],
+    secret_wrong        => ["答えが違います。もう一度どうぞ。\n", "That answer doesn't match. Please try again.\n"],
+    hist_migrate_intro  => ["履歴の保存形式を更新します。現在のパスフレーズを入力してください。\n",
+                             "Updating the history storage format. Please enter your current passphrase.\n"],
+    hist_passphrase_cancel => ["履歴パスフレーズ (空Enterで中止): ", "History passphrase (empty to cancel): "],
+    migrate_failed      => ["更新に失敗しました。今回は履歴を保存せずに続けます。\n",
+                             "The update failed. Continuing this time without saving history.\n"],
+    updated_done        => ["更新しました。\n", "Updated.\n"],
+    hist_pass_no_recovery => ["履歴パスフレーズ (空Enter=履歴なしで起動 / r=合言葉で復旧): ",
+                               "History passphrase (empty = start without history / r = recover with your answer): "],
+    hist_pass_no_recovery2 => ["履歴パスフレーズ (空Enterで履歴なしのまま起動): ",
+                                "History passphrase (empty = start without history): "],
+    starting_no_history => ["今回は履歴を保存せずに起動します。\n", "Starting this time without saving history.\n"],
+    wrong_pass_recover_hint => [" (合言葉で復旧するには r)\n", " (press r to recover with your answer)\n"],
+    hist_encrypt_intro  => ["会話履歴を暗号化して %s に保存します。\n",
+                             "Conversation history will be encrypted and saved to %s.\n"],
+    choose_passphrase   => ["パスフレーズを決めてください(忘れると履歴は復号できなくなります)。\n",
+                             "Choose a passphrase (if you forget it, history can't be decrypted).\n"],
+    key_gen_failed      => ["鍵の生成に失敗しました(openssl rand)。今回は履歴を保存せずに続けます。\n",
+                             "Could not generate a key (openssl rand). Continuing without saving history.\n"],
+    key_save_failed     => ["鍵の保存に失敗しました。今回は履歴を保存せずに続けます。\n",
+                             "Could not save the key. Continuing without saving history.\n"],
+    secret_optional_intro => ["\n合言葉(秘密の質問)も設定できます。パスフレーズを忘れたときの復旧用です。任意。\n",
+                               "\nYou can also set a recovery question. It's used if you forget your passphrase. Optional.\n"],
+    set_it_q            => ["設定しますか? [y/N] ", "Set one now? [y/N] "],
+    passphrase_mismatch_continue => ["一致しませんでした。今回は履歴を保存せずに続けます。\n",
+                                      "They didn't match. Continuing this time without saving history.\n"],
+    set_done            => ["設定しました。\n", "Set.\n"],
+    confirm_banner      => ["──────── 確認 ────────\n", "──────── Confirm ────────\n"],
+    confirm_about_to    => ["AIが次のことをしようとしています:\n", "The AI is about to do the following:\n"],
+    confirm_yn_hint     => ["許可するなら y、やめるなら n を入力してEnterしてください。\n",
+                             "Type y to allow it, n to decline, then press Enter.\n"],
+    confirm_not_instruct => ["(ここはAIへの指示を書く欄ではありません。指示は y か n のあとで)\n",
+                              "(This is not where you type instructions for the AI — do that after y or n)\n"],
+    confirm_yn_only     => ["  → 「y」か「n」だけを入力してください(今の入力は実行しません)。\n",
+                             "  → Please type just 'y' or 'n' (what you typed won't be run).\n"],
+    exit_hint           => ["\r\n(終了するなら exit と入力するか、もう一度 Ctrl-D)\n",
+                             "\r\n(To quit, type exit, or press Ctrl-D again)\n"],
+    history_unavailable => ["履歴は利用できません。\n", "History is not available.\n"],
+    no_saved_conv       => ["保存済みの会話はありません。\n", "No saved conversations.\n"],
+    no_resumable_conv   => ["再開できる会話はありません。\n", "No conversations to resume.\n"],
+    unreadable_file     => ["%s (読めません)", "%s (unreadable)"],
+    resume_number       => ["再開する番号を入力 [1]: ", "Enter a number to resume [1]: "],
+    resuming_conv       => ["会話を再開します(%s メッセージ)。\n", "Resuming the conversation (%s messages).\n"],
+    could_not_load_new  => ["その会話は読み込めませんでした。新しい会話を始めます。\n",
+                             "Could not load that conversation. Starting a new one.\n"],
+    hist_will_encrypt   => ["履歴: 暗号化して保存します\n", "History: saved encrypted\n"],
+    hist_will_not_save  => ["履歴: 保存しません\n", "History: not saved\n"],
+    greeting            => ["\nこんにちは。(終了するときは exit と入力)\n",
+                             "\nHello. (type exit to quit)\n"],
+    your_turn_prompt    => ["\nご用件をどうぞ> ", "\nWhat can I help with> "],
+    input_error         => ["\n[入力エラー] 続けます。\n", "\n[input error] continuing.\n"],
+    turn_failed_cli     => ["うまく処理できませんでした(このまま続けられます)。\n",
+                             "Something went wrong (you can keep going).\n"],
+    debug_hint_1        => ["何度も起きるようなら、一度 exit して\n",
+                             "If this keeps happening, type exit once, then\n"],
+    debug_hint_2        => ["で起動し直し、~/advisor-debug.txt を見せてください。\n",
+                             "restart with that, and share ~/advisor-debug.txt.\n"],
+    farewell            => ["\nさようなら。\n", "\nGoodbye.\n"],
+    cannot_decrypt      => ["(復号できません)", "(could not decrypt)"],
+    corrupted           => ["(壊れています)", "(corrupted)"],
+    no_message          => ["(発言なし)", "(no message)"],
+);
+
+sub L {
+    my ($key, @args) = @_;
+    my $pair = $S{$key};
+    return "[$key]" unless $pair;
+    my $s = $LANGCODE eq 'en' ? $pair->[1] : $pair->[0];
+    return @args ? sprintf($s, @args) : $s;
+}
+
 # perl の警告(Deep recursion / Out of memory / uninitialized など)も
 # 残す。無限ループやメモリ枯渇の手前が見えることがある。
 $SIG{__WARN__} = sub { my $w = shift; blog("WARN: $w"); dbg("WARN: $w"); warn $w; };
@@ -78,7 +245,7 @@ our $ORIG_STTY = `stty -g 2>/dev/null`;
 chomp $ORIG_STTY;
 sub restore_tty { system('stty', $ORIG_STTY) if $ORIG_STTY ne ''; }
 END { blog("END reached (exit=$?)"); restore_tty(); }
-$SIG{INT}  = sub { blog("SIGINT");  restore_tty(); print "\n中断しました。\n"; exit 130; };
+$SIG{INT}  = sub { blog("SIGINT");  restore_tty(); print L('interrupted'); exit 130; };
 $SIG{TERM} = sub { blog("SIGTERM"); restore_tty(); exit 143; };
 $SIG{HUP}  = sub { blog("SIGHUP (端末が閉じられた?)"); restore_tty(); exit 129; };
 $SIG{__DIE__} = sub { blog("DIE" . ($^S ? "(in eval)" : "(FATAL)") . ": " . substr($_[0],0,300)); return; };
@@ -163,32 +330,36 @@ sub configure_provider {
     # 名前で始まるときだけ採用し、そうでなければ既定モデルにする。
     my $env_model = $ENV{CLAUDE_MODEL} || '';
     if ($provider eq 'gemini') {
-        $ENV{GEMINI_API_KEY} or die "GEMINI_API_KEY を設定してください\n";
+        $ENV{GEMINI_API_KEY} or die L('need_key', 'GEMINI_API_KEY');
         $API_KEY = $ENV{GEMINI_API_KEY};
         $MODEL   = ($env_model =~ /^gemini/) ? $env_model : 'gemini-3.5-flash-lite';
         $API_URL = "https://generativelanguage.googleapis.com/v1beta/models/$MODEL:generateContent";
     }
     elsif ($provider eq 'anthropic') {
-        $ENV{ANTHROPIC_API_KEY} or die "ANTHROPIC_API_KEY を設定してください\n";
+        $ENV{ANTHROPIC_API_KEY} or die L('need_key', 'ANTHROPIC_API_KEY');
         $API_KEY = $ENV{ANTHROPIC_API_KEY};
         $MODEL   = ($env_model =~ /^claude/) ? $env_model : 'claude-sonnet-5';
         $API_URL = 'https://api.anthropic.com/v1/messages';
         $ANTHROPIC_VERSION = '2023-06-01';
     }
     else {
-        die "不明なプロバイダ: '$provider' (anthropic か gemini)\n";
+        die L('unknown_provider', $provider);
     }
     $PROVIDER = $provider;
 }
 
 # 選べるAIの一覧 ([id, 説明], ...)。ラッパーが CLAUDE_MODELS_FILE で場所を教える。
+# models.txt は id|日本語の説明|English description の3列(後方互換で2列でも可)。
 my @MODEL_CHOICES;
 if ($ENV{CLAUDE_MODELS_FILE} && open(my $mf, '<:encoding(UTF-8)', $ENV{CLAUDE_MODELS_FILE})) {
     while (my $l = <$mf>) {
         chomp $l;
         next unless $l =~ /\S/;
-        my ($id, $desc) = split /\|/, $l, 2;
-        push @MODEL_CHOICES, [ $id, (defined $desc && $desc ne '') ? $desc : $id ];
+        my ($id, $desc_ja, $desc_en) = split /\|/, $l, 3;
+        my $desc = ($LANGCODE eq 'en' && defined $desc_en && $desc_en ne '')
+            ? $desc_en
+            : ((defined $desc_ja && $desc_ja ne '') ? $desc_ja : $id);
+        push @MODEL_CHOICES, [ $id, $desc ];
     }
     close $mf;
 }
@@ -225,23 +396,23 @@ sub switch_provider {
     # GUI モードでは、その場でのキー入力はまだ用意していない。
     # setup.sh で登録してもらう。
     if ($GUI) {
-        emit_error("$key_name が未登録です。setup.sh でそのAIのキーを登録してください。");
+        emit_error(L('key_not_registered', $key_name));
         return 0;
     }
 
-    my $key = read_secret("\n$key_name が未設定です。貼り付けてEnter(空Enterでキャンセル): ");
+    my $key = read_secret(L('key_missing_prompt', $key_name));
     if (!defined $key || $key eq '') {
-        print "キャンセルしました。[$PROVIDER / $MODEL] のままです。\n";
+        print L('switch_cancelled', $PROVIDER, $MODEL);
         return 0;
     }
     $ENV{$key_name} = $key;
     eval { configure_provider($target) };
-    if ($@) { print "それでも切り替えられませんでした: $@"; return 0; }
-    print "このキーを $ENV_FILE_PATH に保存しますか? [y/N] ";
+    if ($@) { print L('switch_failed', $@); return 0; }
+    print L('save_key_prompt', $ENV_FILE_PATH);
     my $yn = <STDIN>;
     if (defined $yn && $yn =~ /^y/i) {
         persist_env($key_name, $key);
-        print "保存しました。\n";
+        print L('saved_plain');
     }
     return 1;
 }
@@ -249,16 +420,16 @@ sub switch_provider {
 # 選べるAIの一覧を番号付きで表示する
 sub show_model_menu {
     unless (@MODEL_CHOICES) {
-        print "\n(モデル一覧が読み込めません)\n";
+        print L('model_list_unavail');
         return;
     }
     print "\n";
     my $i = 1;
     for my $c (@MODEL_CHOICES) {
-        my $mark = ($c->[0] eq $MODEL) ? ' ← 使用中' : '';
+        my $mark = ($c->[0] eq $MODEL) ? L('currently_using_cli') : '';
         printf "  %d) %s%s\n", $i++, $c->[1], $mark;
     }
-    print "番号を入力すると切り替わります。そのまま質問してもOK。\n";
+    print L('model_menu_hint');
 }
 
 # 指定したモデルIDに切り替える。必要ならプロバイダも一緒に切り替え、
@@ -287,7 +458,7 @@ sub switch_to_model {
 
     persist_env('CLAUDE_MODEL', $MODEL);
     persist_env('CLAUDE_PROVIDER', $PROVIDER);
-    emit_note("→ [$PROVIDER / $MODEL] にしました。");
+    emit_note(L('switched_to', $PROVIDER, $MODEL));
     gui_send({ t => 'model', provider => $PROVIDER, model => $MODEL }) if $GUI;
 }
 
@@ -566,11 +737,21 @@ sub call_api {
     }
     print $cf qq(data-binary = "\@$tmp_req"\n);
     print $cf qq(output = "$tmp_resp"\n);
-    print $cf qq(write-out = "%{http_code}"\n);
+    # http_codeに加え、各段階の所要時間もログに残す。「応答がものすごく
+    # 遅い」という報告が2026-09-25にあったが、同じリクエストを直接curlで
+    # 叩くと1〜3秒台で返ってきて再現しなかった(GUI・curlの呼び出し方式
+    # どちらにも原因は無かった)。IPv6のhappy-eyeballs遅延など、たまに
+    # しか起きないネットワーク側の要因が疑わしいので、次に起きた時すぐ
+    # 原因の段階(名前解決/接続/TLS/応答待ち)が分かるようにしておく。
+    print $cf qq(write-out = "%{http_code} dns=%{time_namelookup}s connect=%{time_connect}s tls=%{time_appconnect}s wait=%{time_starttransfer}s total=%{time_total}s"\n);
     # 回線がつまっても永遠に待たないよう上限を設ける。超えたら curl が
     # エラー終了し、下で HTTP 000 として扱われる(固まらない)。
     print $cf qq(connect-timeout = 20\n);
     print $cf qq(max-time = 180\n);
+    # IPv6のhappy-eyeballs(v6を試して失敗/タイムアウトしてからv4に
+    # フォールバックする)は環境によって数十秒の遅延要因になりうる。
+    # このAPIはIPv4でも問題なく届くので、最初からIPv4を使う。
+    print $cf qq(ipv4\n);
     print $cf qq(silent\n);
     print $cf qq(show-error\n);
     close $cf;
@@ -580,10 +761,12 @@ sub call_api {
     # 応答待ちのあいだ画面が固まって見えないよう一言出す。
     # カーソル制御のエスケープは一切使わない(古い Terminal.app が
     # 文字描画で落ちるため。消さずに1行残すだけにする)。
-    emit_status("問い合わせ中");
-    my $http_code = `@{[quote($CURL)]} -K @{[quote($tmp_config)]}`;
+    emit_status(L('thinking_status'));
+    my $curl_out = `@{[quote($CURL)]} -K @{[quote($tmp_config)]}`;
+    $curl_out = '' unless defined $curl_out;
+    dbg("curl timing: $curl_out");
+    my ($http_code) = $curl_out =~ /^(\d*)/;
     $http_code = '' unless defined $http_code;
-    $http_code =~ s/\s+//g;
     emit_status("") if $GUI;
     unlink $tmp_req, $tmp_config;
 
@@ -605,18 +788,18 @@ sub call_api {
 
     if ($http_code !~ /^2/) {
         if ($http_code eq '' || $http_code eq '000') {
-            die "サーバーに接続できませんでした。通信環境を確認して、もう一度どうぞ。\n";
+            die L('cannot_connect');
         }
         # 本文が長いと画面が流れてしまうので、頭だけ見せる。
         my $brief = $resp_body;
         $brief =~ s/\s+/ /g;
         $brief = substr($brief, 0, 300) . ' …' if length($brief) > 300;
-        die "APIエラー (HTTP $http_code): $brief\n";
+        die L('api_error', $http_code, $brief);
     }
 
     my $data = eval { MiniJSON::decode($resp_body) };
     if ($@ || !defined $data) {
-        die "応答をうまく解釈できませんでした。もう一度どうぞ。\n";
+        die L('bad_response');
     }
     return $data;
 }
@@ -729,7 +912,7 @@ sub parse_response {
 sub parse_response_anthropic {
     my ($resp) = @_;
     if ($resp->{type} && $resp->{type} eq 'error') {
-        die "APIエラー: " . MiniJSON::encode($resp) . "\n";
+        die L('api_error_short', MiniJSON::encode($resp)) . "\n";
     }
     return @{ $resp->{content} || [] };
 }
@@ -739,7 +922,7 @@ my $gemini_call_seq = 0;
 sub parse_response_gemini {
     my ($resp) = @_;
     if ($resp->{error}) {
-        die "APIエラー: " . MiniJSON::encode($resp->{error}) . "\n";
+        die L('api_error_short', MiniJSON::encode($resp->{error})) . "\n";
     }
     my $candidate = $resp->{candidates} && $resp->{candidates}[0];
     my @blocks;
@@ -747,6 +930,13 @@ sub parse_response_gemini {
         if (defined $part->{text}) {
             my $block = { type => 'text', text => $part->{text} };
             $block->{thought_signature} = $part->{thoughtSignature} if defined $part->{thoughtSignature};
+            # thinkingConfig を有効にしている(_gemini_thinking_config)ため、
+            # partsには「考え中」のthought部分と実際の回答部分が別々に
+            # 混ざって返ってくることがある。thought:trueの部分は表示せず
+            # 会話履歴にだけ残す(thoughtSignatureの継続に必要)。ここで
+            # 落とさず全部'text'として返していたのが原因で、GUI側で2本の
+            # 流し込みが同時に走り、文字が交互に混ざって見えていた。
+            $block->{thought} = 1 if $part->{thought};
             push @blocks, $block;
         }
         elsif ($part->{functionCall}) {
@@ -784,7 +974,7 @@ sub _timestamp {
 # 直後に必ず unlink する)
 sub _write_private {
     my ($path, $data) = @_;
-    open(my $fh, '>:encoding(UTF-8)', $path) or die "一時ファイルを作成できません: $!\n";
+    open(my $fh, '>:encoding(UTF-8)', $path) or die L('cannot_make_tmp', $!);
     chmod 0600, $path;
     print $fh $data;
     close $fh;
@@ -850,7 +1040,7 @@ sub hist_decrypt {
         # 「入力しても何も出ない」を知らないと固まったように見えるので、
         # このセッションで最初のパスフレーズ入力のときだけ一言添える。
         unless ($secret_hint_shown) {
-            print "（入力中の文字は画面に表示されません。そのまま打って Enter）\n";
+            print L('hidden_input_hint');
             $secret_hint_shown = 1;
         }
         print $prompt;
@@ -916,37 +1106,37 @@ sub _norm_answer {
 # 合言葉(復旧用の秘密の質問)を設定/再設定する。$master は既に手元にある前提。
 sub set_recovery {
     my ($master) = @_;
-    print "質問を入力してください (例: 初めて買った車の名前は?): ";
+    print L('ask_secret_question');
     my $q = <STDIN>;
     $q = defined($q) ? decode('UTF-8', $q, FB_DEFAULT) : '';
     chomp $q;
-    if ($q eq '') { print "質問が空です。合言葉は設定しませんでした。\n"; return 0; }
-    my $a1 = read_secret("答え: ");
-    my $a2 = read_secret("もう一度入力: ");
+    if ($q eq '') { print L('secret_q_empty'); return 0; }
+    my $a1 = read_secret(L('secret_answer_1'));
+    my $a2 = read_secret(L('secret_answer_again'));
     unless (defined $a1 && $a1 ne '' && defined $a2 && $a1 eq $a2) {
-        print "一致しませんでした。合言葉は設定しませんでした。\n";
+        print L('secret_mismatch');
         return 0;
     }
     unless (_save_master(_norm_answer($a1), $master, $KEY_RECOVERY)) {
-        print "合言葉の保存に失敗しました。\n";
+        print L('secret_save_failed');
         return 0;
     }
     _write_private($KEY_RECOVERY_Q, "$q\n");
-    print "合言葉を設定しました(答えは大文字小文字と前後の空白を区別しません)。\n";
+    print L('secret_set_done');
     return 1;
 }
 
 # 新しいパスフレーズを2回入力させてマスター鍵を包み直す
 sub reset_passphrase {
     my ($master) = @_;
-    my $p1 = read_secret("新しいパスフレーズ: ");
-    my $p2 = read_secret("もう一度入力: ");
+    my $p1 = read_secret(L('new_passphrase_1'));
+    my $p2 = read_secret(L('secret_answer_again'));
     unless (defined $p1 && $p1 ne '' && defined $p2 && $p1 eq $p2) {
-        print "一致しませんでした。パスフレーズは変更しません。\n";
+        print L('passphrase_mismatch');
         return 0;
     }
-    if (_save_master($p1, $master, $KEY_FILE)) { print "変更しました。\n"; return 1; }
-    print "変更に失敗しました。\n";
+    if (_save_master($p1, $master, $KEY_FILE)) { print L('changed_done'); return 1; }
+    print L('change_failed');
     return 0;
 }
 
@@ -959,28 +1149,28 @@ sub recover_with_phrase {
         close $qf;
         chomp $q if defined $q;
     }
-    print "合言葉の質問: $q\n" if defined $q && $q ne '';
+    print L('secret_question_is', $q) if defined $q && $q ne '';
     while (1) {
-        my $ans = read_secret("答え (空Enterで中止): ");
+        my $ans = read_secret(L('secret_answer_try'));
         return undef unless defined $ans && $ans ne '';
         my $master = _open_master(_norm_answer($ans), $KEY_RECOVERY);
         if (defined $master) {
-            print "復旧しました。\n";
-            print "新しいパスフレーズを設定しますか? [y/N] ";
+            print L('recovered');
+            print L('set_new_passphrase_q');
             my $yn = <STDIN>;
             reset_passphrase($master) if defined $yn && $yn =~ /^y/i;
             return $master;
         }
-        print "答えが違います。もう一度どうぞ。\n";
+        print L('secret_wrong');
     }
 }
 
 # 旧形式(.check 直接暗号化 + 履歴ファイルもパスフレーズ直接暗号化)から
 # マスター鍵方式へ移行する。成功したらマスター鍵hexを返す。
 sub migrate_check_file {
-    print "履歴の保存形式を更新します。現在のパスフレーズを入力してください。\n";
+    print L('hist_migrate_intro');
     while (1) {
-        my $pass = read_secret("履歴パスフレーズ (空Enterで中止): ");
+        my $pass = read_secret(L('hist_passphrase_cancel'));
         return undef unless defined $pass && $pass ne '';
         my $got = _unwrap_with($pass, $HISTORY_CHECK);
         if (defined $got) {
@@ -994,15 +1184,15 @@ sub migrate_check_file {
                     _wrap_with($master, $plain, "$HISTORY_DIR/$f") if defined $plain;
                 }
                 unless (_save_master($pass, $master, $KEY_FILE)) {
-                    print "更新に失敗しました。今回は履歴を保存せずに続けます。\n";
+                    print L('migrate_failed');
                     return undef;
                 }
                 unlink $HISTORY_CHECK;
-                print "更新しました。\n";
+                print L('updated_done');
                 return $master;
             }
         }
-        print "パスフレーズが違います。もう一度どうぞ。\n";
+        print L('wrong_passphrase');
     }
 }
 
@@ -1023,7 +1213,7 @@ sub unlock_history {
 
         if (-f $KEY_FILE) {                                 # 解錠
             while (1) {
-                gui_send({ t => 'need_passphrase', prompt => '履歴パスフレーズ',
+                gui_send({ t => 'need_passphrase', prompt => L('history_prompt'),
                            recover => ($has_recovery ? 1 : 0) });
                 my $r = gui_read_typed('passphrase');
                 return 0 unless defined $r;
@@ -1040,14 +1230,14 @@ sub unlock_history {
                     return 0 unless defined $ra;
                     my $ans = defined $ra->{answer} ? $ra->{answer} : '';
                     my $m = ($ans ne '') ? _open_master(_norm_answer($ans), $KEY_RECOVERY) : undef;
-                    unless (defined $m) { emit_error("合言葉の答えが違います。"); next; }
+                    unless (defined $m) { emit_error(L('wrong_answer')); next; }
                     # 新しいパスフレーズに付け替える
                     gui_send({ t => 'need_passphrase',
-                               prompt => '新しい履歴パスフレーズを決めてください' });
+                               prompt => L('new_history_prompt') });
                     my $np = gui_read_typed('passphrase');
                     my $npv = ($np && defined $np->{value}) ? $np->{value} : '';
                     _save_master($npv, $m, $KEY_FILE) if $npv ne '';
-                    emit_note("復旧しました。");
+                    emit_note(L('recovered'));
                     $ENV{CLAUDE_HIST_PASS} = $m;
                     return 1;
                 }
@@ -1056,13 +1246,13 @@ sub unlock_history {
                 return 0 if $pass eq '';                    # 空=履歴なしで起動
                 my $master = _open_master($pass, $KEY_FILE);
                 if (defined $master) { $ENV{CLAUDE_HIST_PASS} = $master; return 1; }
-                emit_error("パスフレーズが違います。もう一度どうぞ。");
+                emit_error(L('wrong_passphrase'));
             }
         }
 
         # 初回設定
         gui_send({ t => 'need_passphrase',
-                   prompt => '新しい履歴パスフレーズを決めてください' });
+                   prompt => L('new_history_prompt') });
         my $r = gui_read_typed('passphrase');
         return 0 unless defined $r;
         my $p = defined $r->{value} ? $r->{value} : '';
@@ -1081,7 +1271,7 @@ sub unlock_history {
             _write_private($KEY_RECOVERY_Q, "$q\n");
         } else {
             unlink $KEY_FILE;
-            emit_error("合言葉が設定されなかったので、今回は履歴を保存しません。");
+            emit_error(L('no_recovery_set'));
             return 0;
         }
         $ENV{CLAUDE_HIST_PASS} = $master;
@@ -1101,11 +1291,11 @@ sub unlock_history {
         # 回数制限なし。履歴なしで進めたいときは空Enterで抜ける。
         while (1) {
             my $prompt = $has_recovery
-                ? "履歴パスフレーズ (空Enter=履歴なしで起動 / r=合言葉で復旧): "
-                : "履歴パスフレーズ (空Enterで履歴なしのまま起動): ";
+                ? L('hist_pass_no_recovery')
+                : L('hist_pass_no_recovery2');
             my $pass = read_secret($prompt);
             unless (defined $pass && $pass ne '') {
-                print "今回は履歴を保存せずに起動します。\n";
+                print L('starting_no_history');
                 return 0;
             }
             if ($has_recovery && $pass eq 'r') {
@@ -1115,33 +1305,33 @@ sub unlock_history {
             }
             my $master = _open_master($pass, $KEY_FILE);
             if (defined $master) { $ENV{CLAUDE_HIST_PASS} = $master; return 1; }
-            print "パスフレーズが違います。もう一度どうぞ。";
-            print $has_recovery ? " (合言葉で復旧するには r)\n" : "\n";
+            print L('wrong_passphrase');
+            print $has_recovery ? L('wrong_pass_recover_hint') : "\n";
         }
     }
 
     # 初回設定
-    print "会話履歴を暗号化して $HISTORY_DIR に保存します。\n";
-    print "パスフレーズを決めてください(忘れると履歴は復号できなくなります)。\n";
-    my $p1 = read_secret("新しいパスフレーズ: ");
-    my $p2 = read_secret("もう一度入力: ");
+    print L('hist_encrypt_intro', $HISTORY_DIR);
+    print L('choose_passphrase');
+    my $p1 = read_secret(L('new_passphrase_1'));
+    my $p2 = read_secret(L('secret_answer_again'));
     unless (defined $p1 && $p1 ne '' && defined $p2 && $p1 eq $p2) {
-        print "一致しませんでした。今回は履歴を保存せずに続けます。\n";
+        print L('passphrase_mismatch_continue');
         return 0;
     }
     my $master = _gen_master();
     unless (defined $master) {
-        print "鍵の生成に失敗しました(openssl rand)。今回は履歴を保存せずに続けます。\n";
+        print L('key_gen_failed');
         return 0;
     }
     unless (_save_master($p1, $master, $KEY_FILE)) {
-        print "鍵の保存に失敗しました。今回は履歴を保存せずに続けます。\n";
+        print L('key_save_failed');
         return 0;
     }
-    print "設定しました。\n";
+    print L('set_done');
 
-    print "\n合言葉(秘密の質問)も設定できます。パスフレーズを忘れたときの復旧用です。任意。\n";
-    print "設定しますか? [y/N] ";
+    print L('secret_optional_intro');
+    print L('set_it_q');
     my $yn = <STDIN>;
     set_recovery($master) if defined $yn && $yn =~ /^y/i;
 
@@ -1180,7 +1370,7 @@ sub first_user_line {
         $c =~ s/\s+/ /g;
         return length($c) > 60 ? substr($c, 0, 60) . '…' : $c;
     }
-    return '(発言なし)';
+    return L('no_message');
 }
 
 # 内部形式の会話を GUI で再描画するための {role, text} 配列に平す。
@@ -1275,11 +1465,11 @@ sub confirm {
     }
 
     print "\n";
-    print "──────── 確認 ────────\n";
-    print "AIが次のことをしようとしています:\n";
+    print L('confirm_banner');
+    print L('confirm_about_to');
     print "  $msg\n";
-    print "許可するなら y、やめるなら n を入力してEnterしてください。\n";
-    print "(ここはAIへの指示を書く欄ではありません。指示は y か n のあとで)\n";
+    print L('confirm_yn_hint');
+    print L('confirm_not_instruct');
     print "─────────────────────\n";
     # y/n 以外(指示文を打ってしまった等)ではキャンセルせず、聞き直す。
     # 誤って打ち込んだ一言で書き込みが飛んでしまうのを防ぐ。
@@ -1292,7 +1482,7 @@ sub confirm {
         return 1 if $a =~ /^(y|yes|はい)$/i;
         return 0 if $a =~ /^(n|no|いいえ)$/i;
         return 0 if $a eq '';                               # Ctrl-C / 空Enter → 中止
-        print "  → 「y」か「n」だけを入力してください(今の入力は実行しません)。\n";
+        print L('confirm_yn_only');
     }
 }
 
@@ -1526,7 +1716,7 @@ sub confirm {
                         $result = undef;
                         last RAW_LOOP;
                     }
-                    print "\r\n(終了するなら exit と入力するか、もう一度 Ctrl-D)\n";
+                    print L('exit_hint');
                     print $redraw_prompt;
                     $rows_used = (_pos_rc(_display_width_chars($redraw_prompt), $term_cols))[0] + 1;
                 }
@@ -1627,7 +1817,7 @@ sub run_tool {
 
     if ($name eq 'read_file') {
         my $path = $input->{path};
-        open(my $fh, '<:encoding(UTF-8)', $path) or return "エラー: $path を開けません: $!";
+        open(my $fh, '<:encoding(UTF-8)', $path) or return L('cannot_open_read', $path, $!);
         local $/;
         my $content = <$fh>;
         close $fh;
@@ -1635,31 +1825,31 @@ sub run_tool {
     }
     elsif ($name eq 'write_file') {
         my $path = $input->{path};
-        unless (confirm("ファイル '$path' に書き込みます")) {
-            return "ユーザーが書き込みをキャンセルしました";
+        unless (confirm(L('confirm_write_file', $path))) {
+            return L('write_cancelled');
         }
-        open(my $fh, '>:encoding(UTF-8)', $path) or return "エラー: $path に書き込めません: $!";
+        open(my $fh, '>:encoding(UTF-8)', $path) or return L('cannot_open_write', $path, $!);
         print $fh $input->{content};
         close $fh;
-        return "書き込み完了: $path";
+        return L('write_done', $path);
     }
     elsif ($name eq 'list_dir') {
         my $path = $input->{path} || '.';
-        opendir(my $dh, $path) or return "エラー: $path を開けません: $!";
+        opendir(my $dh, $path) or return L('cannot_open_read', $path, $!);
         my @entries = sort grep { $_ ne '.' && $_ ne '..' } readdir($dh);
         closedir $dh;
         return join("\n", @entries);
     }
     elsif ($name eq 'run_shell') {
         my $command = $input->{command};
-        unless (confirm("コマンドを実行します: $command")) {
-            return "ユーザーが実行をキャンセルしました";
+        unless (confirm(L('confirm_run_shell', $command))) {
+            return L('run_cancelled');
         }
         my $output = `$command 2>&1`;
-        return $output eq '' ? '(出力なし)' : $output;
+        return $output eq '' ? L('no_output') : $output;
     }
     else {
-        return "不明なツール: $name";
+        return L('unknown_tool', $name);
     }
 }
 
@@ -1674,28 +1864,28 @@ if ($HISTORY_ENABLED) {
 }
 
 if ($CHANGE_PASS) {
-    unless ($HISTORY_ENABLED) { print "履歴は利用できません。\n"; exit 1; }
+    unless ($HISTORY_ENABLED) { print L('history_unavailable'); exit 1; }
     reset_passphrase($ENV{CLAUDE_HIST_PASS});   # unlock後、CLAUDE_HIST_PASSにはマスター鍵が入っている
     exit 0;
 }
 
 if ($SET_RECOVERY) {
-    unless ($HISTORY_ENABLED) { print "履歴は利用できません。\n"; exit 1; }
+    unless ($HISTORY_ENABLED) { print L('history_unavailable'); exit 1; }
     set_recovery($ENV{CLAUDE_HIST_PASS});
     exit 0;
 }
 
 if ($LIST_HISTORY) {
-    unless ($HISTORY_ENABLED) { print "履歴は利用できません。\n"; exit 1; }
+    unless ($HISTORY_ENABLED) { print L('history_unavailable'); exit 1; }
     my @files = history_files();
-    unless (@files) { print "保存済みの会話はありません。\n"; exit 0; }
+    unless (@files) { print L('no_saved_conv'); exit 0; }
     my $i = 1;
     for my $f (@files) {
         my $raw = hist_decrypt("$HISTORY_DIR/$f");
-        my $line = '(復号できません)';
+        my $line = L('cannot_decrypt');
         if (defined $raw) {
             my $d = eval { MiniJSON::decode($raw) };
-            $line = $d ? (($d->{started} || $f) . '  ' . first_user_line($d)) : '(壊れています)';
+            $line = $d ? (($d->{started} || $f) . '  ' . first_user_line($d)) : L('corrupted');
         }
         printf "  %2d) %s\n", $i++, $line;
     }
@@ -1703,9 +1893,9 @@ if ($LIST_HISTORY) {
 }
 
 if ($RESUME) {
-    unless ($HISTORY_ENABLED) { print "履歴は利用できません。\n"; exit 1; }
+    unless ($HISTORY_ENABLED) { print L('history_unavailable'); exit 1; }
     my @files = history_files();
-    unless (@files) { print "再開できる会話はありません。\n"; exit 0; }
+    unless (@files) { print L('no_resumable_conv'); exit 0; }
     my @decoded;
     my $i = 1;
     for my $f (@files) {
@@ -1713,9 +1903,9 @@ if ($RESUME) {
         my $d = defined($raw) ? eval { MiniJSON::decode($raw) } : undef;
         push @decoded, { file => $f, data => $d };
         printf "  %2d) %s\n", $i++,
-            $d ? (($d->{started} || $f) . '  ' . first_user_line($d)) : "$f (読めません)";
+            $d ? (($d->{started} || $f) . '  ' . first_user_line($d)) : L('unreadable_file', $f);
     }
-    print "再開する番号を入力 [1]: ";
+    print L('resume_number');
     my $sel = <STDIN>;
     $sel = defined($sel) ? $sel + 0 : 1;
     $sel = 1 if $sel < 1 || $sel > scalar(@decoded);
@@ -1723,9 +1913,9 @@ if ($RESUME) {
     if ($chosen->{data} && $chosen->{data}{messages}) {
         @messages = @{ $chosen->{data}{messages} };
         $SESSION_FILE = "$HISTORY_DIR/" . $chosen->{file};   # 同じファイルに続けて保存
-        print "会話を再開します(" . scalar(@messages) . "メッセージ)。\n";
+        print L('resuming_conv', scalar(@messages));
     } else {
-        print "その会話は読み込めませんでした。新しい会話を始めます。\n";
+        print L('could_not_load_new');
     }
 }
 
@@ -1781,7 +1971,7 @@ if ($GUI) {
                            count   => scalar(@messages),
                            entries => flatten_history(\@messages) });
             } else {
-                emit_error("その会話を読み込めませんでした。");
+                emit_error(L('could_not_load_conv'));
             }
             next;
         }
@@ -1792,7 +1982,7 @@ if ($GUI) {
         my $r = eval { handle_turn($text) };
         if ($@) {
             dbg("turn error(gui): $@");
-            emit_error("うまく処理できませんでした(続けられます)。");
+            emit_error(L('turn_failed'));
             pop @messages if @messages
                 && ($messages[-1]{role} eq 'assistant' || ref $messages[-1]{content});
         }
@@ -1805,13 +1995,13 @@ if ($GUI) {
 }
 
 print "=== high_sierra Advisor ===\n";
-print $HISTORY_ENABLED ? "履歴: 暗号化して保存します\n" : "履歴: 保存しません\n";
+print $HISTORY_ENABLED ? L('hist_will_encrypt') : L('hist_will_not_save');
 if (@MODEL_CHOICES) {
     show_model_menu();
 } else {
     print "[$PROVIDER / $MODEL]\n";
 }
-print "\nこんにちは。(終了するときは exit と入力)\n";
+print L('greeting');
 
 # 1ターン分の処理。'quit' を返したら会話終了、それ以外は継続。
 # ここで die しても、呼び出し側の eval が受け止めてプログラムは落ちない。
@@ -1833,7 +2023,7 @@ sub handle_turn {
         if ($n >= 1 && $n <= @MODEL_CHOICES) {
             my $id = $MODEL_CHOICES[$n - 1][0];
             ($id eq $MODEL)
-                ? emit_note("すでに [$PROVIDER / $MODEL] です。")
+                ? emit_note(L('already_on', $PROVIDER, $MODEL))
                 : switch_to_model($id);
             return;
         }
@@ -1846,7 +2036,7 @@ sub handle_turn {
         my $id = ($arg =~ /^\d+$/ && @MODEL_CHOICES && $arg >= 1 && $arg <= @MODEL_CHOICES)
             ? $MODEL_CHOICES[$arg - 1][0] : $arg;
         ($id eq $MODEL)
-            ? emit_note("すでに [$PROVIDER / $MODEL] です。")
+            ? emit_note(L('already_on', $PROVIDER, $MODEL))
             : switch_to_model($id);
         return;
     }
@@ -1855,12 +2045,12 @@ sub handle_turn {
     if ($input eq '/claude' || $input eq '/gemini') {
         my $target = $input eq '/claude' ? 'anthropic' : 'gemini';
         if ($target eq $PROVIDER) {
-            emit_note("すでに [$PROVIDER / $MODEL] です。");
+            emit_note(L('already_on', $PROVIDER, $MODEL));
         }
         elsif (switch_provider($target)) {
             persist_env('CLAUDE_PROVIDER', $PROVIDER);
             persist_env('CLAUDE_MODEL', $MODEL);
-            emit_note("→ [$PROVIDER / $MODEL] にしました。会話はそのまま引き継がれます。");
+            emit_note(L('switched_to_kept', $PROVIDER, $MODEL));
             gui_send({ t => 'model', provider => $PROVIDER, model => $MODEL }) if $GUI;
         }
         return;
@@ -1890,8 +2080,13 @@ sub handle_turn {
 
         # 空の応答(安全フィルタ・トークン上限で本文なし 等)。空の assistant
         # ターンを履歴に入れると以後ずっと壊れるので、入れずに戻る。
-        unless (@content_blocks) {
-            emit_error("(AIからの応答が空でした。言い方を変えてもう一度どうぞ)");
+        # thought(考え中)のtextしか無い場合も、ユーザーには何も表示され
+        # ないまま黙って終わってしまうので同様に扱う。
+        my $has_visible = grep {
+            ($_->{type} eq 'text' && !$_->{thought}) || $_->{type} eq 'tool_use'
+        } @content_blocks;
+        unless (@content_blocks && $has_visible) {
+            emit_error(L('empty_response'));
             pop @messages if @messages && !ref $messages[-1]{content};
             return;
         }
@@ -1902,12 +2097,12 @@ sub handle_turn {
         for my $block (@content_blocks) {
             my $t = $block->{type} || '';
             if ($t eq 'text') {
-                emit_text($block->{text});
+                emit_text($block->{text}) unless $block->{thought};
             }
             elsif ($t eq 'tool_use') {
                 emit_tool($block->{name}, $block->{input});
                 my $result = eval { run_tool($block->{name}, $block->{input}) };
-                $result = "ツール実行でエラーが出ました: $@" if $@;
+                $result = L('tool_error', $@) if $@;
                 push @tool_results, {
                     type        => 'tool_result',
                     tool_use_id => $block->{id},
@@ -1930,11 +2125,11 @@ sub handle_turn {
 # 入力プロンプトに戻す。端末設定も毎回念のため戻す。
 while (1) {
     dbg("--- waiting for input (readline) ---");
-    my $input = eval { read_line_interactive("\nご用件をどうぞ> ") };
+    my $input = eval { read_line_interactive(L('your_turn_prompt')) };
     if ($@) {
         restore_tty();
         dbg("readline error: $@");
-        print "\n[入力エラー] 続けます。\n";
+        print L('input_error');
         next;
     }
     dbg("readline returned: " . (defined $input ? "len=" . length($input) : "undef(EOF)"));
@@ -1949,10 +2144,10 @@ while (1) {
         restore_tty();
         dbg("turn error: $@");
         print "\n────────\n";
-        print "うまく処理できませんでした(このまま続けられます)。\n";
-        print "何度も起きるようなら、一度 exit して\n";
+        print L('turn_failed_cli');
+        print L('debug_hint_1');
         print "  CLAUDE_DEBUG_LOG=\$HOME/advisor-debug.txt advisor\n";
-        print "で起動し直し、~/advisor-debug.txt を見せてください。\n";
+        print L('debug_hint_2');
         print "────────\n";
         # 半端な履歴を1つ戻して、次の発言から再開できるようにする
         pop @messages if @messages
@@ -1965,4 +2160,4 @@ while (1) {
     dbg("save_history error: $@") if $@;
 }
 
-print "\nさようなら。\n";
+print L('farewell');
